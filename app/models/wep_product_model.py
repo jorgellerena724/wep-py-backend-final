@@ -1,7 +1,11 @@
-from typing import TYPE_CHECKING, Optional
-from sqlmodel import Field, Relationship, SQLModel
-from datetime import date
+from typing import TYPE_CHECKING, List, Optional
+from pydantic import BaseModel
+from sqlmodel import JSON, Column, Field, Relationship, SQLModel
 from sqlalchemy import Text
+
+class ProductVariant(BaseModel):
+    description: str
+    price: float
 
 if TYPE_CHECKING:
     from .wep_category_model import WepCategoryModel
@@ -14,7 +18,10 @@ class WepProductModel(SQLModel, table=True):
     description : str = Field(sa_type=Text(), nullable=False)
     photo: str        = Field(max_length=80, nullable=False)
     category_id: int = Field(foreign_key="category.id", nullable=False)
-    price: Optional[float] = Field(default=None)
+    variants: List[ProductVariant] = Field(
+        sa_column=Column(JSON), 
+        default=[]
+    )
     
     category: Optional["WepCategoryModel"] = Relationship(
         back_populates="products",

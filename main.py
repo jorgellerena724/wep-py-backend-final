@@ -4,7 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 from app.api.router import api_router
 from app.config.config import settings
-from app.config.database import init_database
+from app.config.database import init_database, migrate_all_tenant_schemas
 from fastapi.staticfiles import StaticFiles
 import logging
 
@@ -44,7 +44,7 @@ app.add_middleware(
 app.include_router(api_router, prefix="/api", tags=["API Router"])
 
 if __name__ == "__main__":
-    
+        migrate_all_tenant_schemas()
         uvicorn.run(
             "main:app",
             host="0.0.0.0",
