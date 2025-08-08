@@ -1,12 +1,11 @@
 import json
 from fastapi import APIRouter, UploadFile, Form, Depends, HTTPException, status
 from typing import Dict, Optional, List
-from sqlmodel import SQLModel, select
+from sqlmodel import SQLModel, select, Session
 from app.api.endpoints.token import verify_token, get_tenant_session
 from app.models.wep_user_model import WepUserModel
 from app.models.wep_product_model import WepProductModel
 from app.services.file_service import FileService
-from sqlalchemy.orm import Session
 from sqlalchemy.orm import selectinload
 
 class CategoryRead(SQLModel):
@@ -19,7 +18,7 @@ class ProductRead(SQLModel):
     description: str
     photo: str
     category: CategoryRead
-    variants: Dict
+    variants: List[Dict]
 
 router = APIRouter()
 
@@ -103,10 +102,10 @@ async def update_product(
         if description is not None:
             product.description = description
         if variants is not None:
-            variants_dict = json.loads(variants)
-            if not isinstance(variants_dict, dict):
-                raise HTTPException(400, "Formato inválido para variantes")
-            product.variants = variants_dict
+            variants_list = json.loads(variants)  # Recibe lista, no dict
+            if not isinstance(variants_list, list):
+                raise HTTPException(400, "Las variantes deben ser una lista")
+            product.variants = variants_list
         if category_id is not None:
             product.category_id = category_id
 
@@ -161,7 +160,11 @@ def get_product(
     current_user: WepUserModel = Depends(verify_token),
     db: Session = Depends(get_tenant_session)
 ):
-    product = db.get(WepProductModel, product_id)
+    product = db.exec(
+         select(WepProductModel)
+         .options(selectinload(WepProductModel.category))
+         .where(WepProductModel.id == product_id)
+     ).first()
     if not product:
         raise HTTPException(status_code=404, detail="Producto no encontrado")
     return product
