@@ -76,7 +76,7 @@ async def update_news(
             FileService.validate_file(photo)
             if news.photo:
                 FileService.delete_file(news.photo, current_user.client)
-            new_filename = await FileService.save_file(photo)
+            new_filename = await FileService.save_file(photo, current_user.client)
             news.photo = new_filename
 
         # Confirmar cambios

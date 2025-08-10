@@ -20,7 +20,7 @@ async def create_header(
     
     try:
         # Guardar imagen (solo nombre)
-        logo_filename = await FileService.save_file(photo)
+        logo_filename = await FileService.save_file(photo, current_user.client)
         
         # Crear registro
         header = WepHeaderModel(name=name, logo=logo_filename)
@@ -69,7 +69,7 @@ async def update_header(
                 FileService.delete_file(header.logo, current_user.client)
             
             # Guardar nueva imagen
-            new_filename = await FileService.save_file(photo)
+            new_filename = await FileService.save_file(photo, current_user.client)
             header.logo = new_filename
 
         # Confirmar cambios en la base de datos

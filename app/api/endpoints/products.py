@@ -134,7 +134,7 @@ async def update_product(
                 FileService.delete_file(product.photo, current_user.client)
             
             # Guardar nueva imagen
-            new_filename = await FileService.save_file(photo)
+            new_filename = await FileService.save_file(photo, current_user.client)
             product.photo = new_filename
 
         # Confirmar cambios en la base de datos

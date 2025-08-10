@@ -21,7 +21,7 @@ async def create_header(
     
     try:
         # Guardar imagen (solo nombre)
-        photo_filename = await FileService.save_file(photo)
+        photo_filename = await FileService.save_file(photo, current_user.client)
         
         # Crear registro
         carrousel = WepCarrouselModel(title=title, description=description, photo=photo_filename)
@@ -77,7 +77,7 @@ async def update_carrousel(
                 FileService.delete_file(carrousel.photo, current_user.client)
             
             # Guardar nueva imagen
-            new_filename = await FileService.save_file(photo)
+            new_filename = await FileService.save_file(photo, current_user.client)
             carrousel.photo = new_filename
 
         # Confirmar cambios en la base de datos

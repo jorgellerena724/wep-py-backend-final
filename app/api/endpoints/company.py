@@ -21,7 +21,7 @@ async def create_company(
     
     try:
         # Guardar imagen (solo nombre)
-        photo_filename = await FileService.save_file(photo)
+        photo_filename = await FileService.save_file(photo, current_user.client)
         
         # Crear registro
         company = WepCompanyModel(title=title, description=description, photo=photo_filename)
@@ -68,7 +68,7 @@ async def update_company(
             FileService.validate_file(photo)
             if company.photo:
                 FileService.delete_file(company.photo, current_user.client)
-            company.photo = await FileService.save_file(photo)
+            company.photo = await FileService.save_file(photo, current_user.client)
 
         db.commit()
         db.refresh(company)

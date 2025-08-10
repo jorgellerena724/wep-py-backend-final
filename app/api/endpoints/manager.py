@@ -84,7 +84,7 @@ async def update_manager(
             FileService.validate_file(photo)
             if manager.photo:
                 FileService.delete_file(manager.photo, current_user.client)
-            new_filename = await FileService.save_file(photo)
+            new_filename = await FileService.save_file(photo, current_user.client)
             manager.photo = new_filename
 
         # Confirmar cambios en la base de datos
