@@ -32,16 +32,11 @@ async def create_product(
     current_user: WepUserModel = Depends(verify_token),
     db: Session = Depends(get_tenant_session)
 ):
-    # Validar imagen
-    FileService.validate_file(photo)
-    
     try:
         variants_list = []
         if variants:
             try:
                 variants_data = json.loads(variants)
-                
-                # Validar y convertir a lista de objetos
                 if not isinstance(variants_data, list):
                     raise ValueError("Las variantes deben ser una lista")
                     
@@ -49,12 +44,13 @@ async def create_product(
                     if 'description' not in item or 'price' not in item:
                         raise ValueError("Cada variante debe tener 'description' y 'price'")
                     variants_list.append(item)
-                    
             except json.JSONDecodeError:
                 raise HTTPException(status_code=400, detail="JSON inválido en variantes")
             except Exception as e:
                 raise HTTPException(status_code=400, detail=str(e))
-        # Guardar imagen (solo nombre)
+        
+        # Validar imagen después de procesar variantes para evitar guardar archivos innecesarios
+        FileService.validate_file(photo)
         photo_filename = await FileService.save_file(photo, current_user.client)
         
         # Crear registro
@@ -65,15 +61,34 @@ async def create_product(
             category_id=category_id,
             variants=variants_list
         )
+        
         db.add(product)
         db.commit()
-        db.refresh(product)
-        return product
         
-    except HTTPException:
-        raise
+        # En lugar de refresh, obtenemos el producto recién creado con una nueva consulta
+        new_product = db.get(WepProductModel, product.id)
+        if not new_product:
+            raise HTTPException(status_code=500, detail="Producto creado pero no se pudo recuperar")
+        
+        return new_product
+        
+    except HTTPException as he:
+        # Eliminar archivo si hubo error después de guardarlo
+        if 'photo_filename' in locals():
+            try:
+                FileService.delete_file(photo_filename, current_user.client)
+            except:
+                pass
+        raise he
+        
     except Exception as e:
         db.rollback()
+        # Eliminar archivo si hubo error después de guardarlo
+        if 'photo_filename' in locals():
+            try:
+                FileService.delete_file(photo_filename, current_user.client)
+            except:
+                pass
         raise HTTPException(
             status_code=500,
             detail=f"Error creando producto: {str(e)}"

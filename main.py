@@ -44,7 +44,6 @@ app.add_middleware(
 app.include_router(api_router, prefix="/api", tags=["API Router"])
 
 if __name__ == "__main__":
-        migrate_all_tenant_schemas()
         uvicorn.run(
             "main:app",
             host="0.0.0.0",

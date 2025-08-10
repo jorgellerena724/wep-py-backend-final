@@ -182,17 +182,11 @@ def init_database():
         raise RuntimeError("No se pudo establecer conexión con la base de datos")
     
     try:
-        # 1. Crear esquema público y todas las tablas SQLModel
-        create_sqlmodel_tables()
-        
-        # 2. Crear usuario admin (y esquema shirkasoft automáticamente)
-        create_admin_user()
-        
-        # 3. Crear datos iniciales en public (plantilla para tenants)
-        create_public_initial_data()
-        
-        # 4. Verificar que todo está bien
-        verify_admin_user()
+        create_sqlmodel_tables()          # 1. Crear tablas base
+        create_admin_user()               # 2. Crear admin
+        create_public_initial_data()      # 3. Crear datos iniciales
+        verify_admin_user()               # 4. Verificar admin
+        migrate_all_tenant_schemas()      # 5. Migrar tenants existentes (si hay)
         
         logger.info("✅ Base de datos inicializada correctamente")
     except Exception as e:
