@@ -49,6 +49,6 @@ if __name__ == "__main__":
             host="0.0.0.0",
             port=settings.SERVER_PORT,
             workers=4,
-            reload=True,
+            reload=settings.DEBUG,
             log_level="info"
         )
