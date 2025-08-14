@@ -341,7 +341,7 @@ def get_all_tables_except_user():
                 FROM information_schema.tables 
                 WHERE table_schema = 'public' 
                 AND table_type = 'BASE TABLE'
-                AND table_name NOT IN ('user2', 'active_sessions')
+                AND table_name NOT IN ('user2', 'active_sessions', 'google_calendar_tokens')
                 ORDER BY table_name
             """))
             tables = [row[0] for row in result.fetchall()]
