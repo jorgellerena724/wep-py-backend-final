@@ -139,7 +139,6 @@ async def update_product(
 
         # Confirmar cambios en la base de datos
         db.commit()
-        db.refresh(product)
         
         return product
 

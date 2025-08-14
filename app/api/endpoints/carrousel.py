@@ -101,8 +101,10 @@ async def update_carrousel(
 
 @router.get("/", response_model=list[WepCarrouselModel])
 def get_carrousel( current_user: WepUserModel = Depends(verify_token),db: Session = Depends(get_tenant_session)):
-    # Para "shirkasoft", filtrar por status=True
-    if current_user.full_name == "shirkasoft":
+    
+    source = getattr(current_user, 'source', 'unknown')
+    
+    if source == "website":
         query = select(WepCarrouselModel).where(WepCarrouselModel.status == True).order_by(WepCarrouselModel.id)
     else:
         # Para otros usuarios, no filtrar (devolver todo)

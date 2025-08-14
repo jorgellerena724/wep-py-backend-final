@@ -14,9 +14,7 @@ try:
     # Aseguramos que la URL use 'postgresql://' en lugar de 'postgres://'
     database_url = settings.WEP_DATABASE_URL.replace("postgres://", "postgresql://", 1)
     engine = create_engine(database_url, echo=True)  # echo=True para ver queries en logs
-    logger.info("Engine de base de datos creado correctamente")
 except Exception as e:
-    logger.error(f"Error al crear el engine de base de datos: {e}")
     raise
 
 # Verificar conexión a la base de datos
@@ -72,7 +70,6 @@ def create_active_sessions_table():
             """))
             
             session.commit()
-            logger.info("✅ Tabla active_sessions creada/verificada")
     except Exception as e:
         logger.error(f"❌ Error al crear tabla active_sessions: {e}")
         raise
@@ -148,7 +145,6 @@ def create_sqlmodel_tables():
         
         # Crear todas las tablas de SQLModel
         SQLModel.metadata.create_all(engine)
-        logger.info("✅ Todas las tablas de SQLModel creadas/verificadas")
         
         # Crear tabla active_sessions (no es SQLModel)
         create_active_sessions_table()
@@ -168,15 +164,12 @@ def create_public_initial_data():
             create_initial_contact()
             create_initial_company()
             create_initial_carrousels()
-            
-            logger.info("✅ Datos iniciales del esquema público creados")
     except Exception as e:
         logger.error(f"❌ Error al crear datos iniciales públicos: {e}")
         raise
 
 def init_database():
     """Inicializa la base de datos - función principal"""
-    logger.info("🚀 Inicializando base de datos...")
     
     if not verify_database_connection():
         raise RuntimeError("No se pudo establecer conexión con la base de datos")
@@ -188,7 +181,6 @@ def init_database():
         verify_admin_user()               # 4. Verificar admin
         migrate_all_tenant_schemas()      # 5. Migrar tenants existentes (si hay)
         
-        logger.info("✅ Base de datos inicializada correctamente")
     except Exception as e:
         logger.error(f"❌ Error crítico al inicializar base de datos: {e}")
         raise
@@ -242,7 +234,6 @@ def create_initial_header():
                     """).bindparams(name="Encabezado", logo=None)
                 )
                 session.commit()
-                logger.info("  ✅ Header plantilla creado en public")
             else:
                 logger.info("  ⏭️ Header ya existe en public")
     except Exception as e:
@@ -268,7 +259,6 @@ def create_initial_contact():
                     )
                 )
                 session.commit()
-                logger.info("  ✅ Contact plantilla creado en public")
             else:
                 logger.info("  ⏭️ Contact ya existe en public")
     except Exception as e:
@@ -297,7 +287,6 @@ def create_initial_company():
                         """).bindparams(**data)
                     )
                 session.commit()
-                logger.info(f"  ✅ {len(company_data)} companies plantilla creadas en public")
             else:
                 logger.info("  ⏭️ Companies ya existen en public")
     except Exception as e:
@@ -328,7 +317,6 @@ def create_initial_carrousels():
                         """).bindparams(**data)
                     )
                 session.commit()
-                logger.info(f"  ✅ {len(carrousel_data)} carrousels plantilla creados en public")
             else:
                 logger.info("  ⏭️ Carrousels ya existen en public")
     except Exception as e:
@@ -357,7 +345,6 @@ def get_all_tables_except_user():
                 ORDER BY table_name
             """))
             tables = [row[0] for row in result.fetchall()]
-            logger.info(f"Tablas encontradas para copiar: {tables}")
             return tables
     except Exception as e:
         logger.error(f"Error al obtener lista de tablas: {e}")
@@ -379,13 +366,11 @@ def create_tenant_schema(client_name: str):
             """).bindparams(schema_name=client_name)).scalar()
             
             if schema_exists:
-                logger.info(f"⚠️ Esquema '{client_name}' ya existe, verificando completitud...")
                 migrate_existing_tenant_schema(client_name)
                 return
             
             # 1. Crear el esquema
             session.exec(text(f"CREATE SCHEMA IF NOT EXISTS {client_name}"))
-            logger.info(f"📁 Esquema '{client_name}' creado")
             
             # 2. Obtener todas las tablas del esquema public (excepto user2 y active_sessions)
             tables_to_create = get_all_tables_except_user()
@@ -407,7 +392,6 @@ def create_tenant_schema(client_name: str):
                     continue
             
             session.commit()
-            logger.info(f"✅ Todas las tablas copiadas al esquema '{client_name}'")
             
             # 4. Crear datos iniciales solo para las tablas específicas
             create_tenant_initial_data(client_name)
@@ -473,7 +457,6 @@ def create_tenant_initial_data(client_name: str):
                     tenant_count = tenant_count_result.scalar()
                     
                     if tenant_count > 0:
-                        logger.info(f"  ⏭️ Tabla '{client_name}.{table_name}' ya tiene {tenant_count} registros, saltando...")
                         continue
                     
                     # Copiar todos los datos desde public a tenant
@@ -491,7 +474,6 @@ def create_tenant_initial_data(client_name: str):
                     continue
             
             session.commit()
-            logger.info(f"✅ Todos los datos iniciales copiados para tenant '{client_name}'")
             
     except Exception as e:
         logger.error(f"❌ Error al copiar datos iniciales para tenant '{client_name}': {e}")
@@ -526,11 +508,8 @@ def migrate_existing_tenant_schema(client_name: str):
             """).bindparams(schema_name=client_name)).scalar()
             
             if not schema_exists:
-                logger.warning(f"⚠️ Esquema '{client_name}' no existe, creándolo...")
                 create_tenant_schema(client_name)
                 return
-            
-            logger.info(f"🔄 Migrando esquema existente '{client_name}'...")
             
             # Obtener tablas disponibles y existentes
             public_tables = get_all_tables_except_user()
@@ -546,12 +525,9 @@ def migrate_existing_tenant_schema(client_name: str):
             missing_tables = [table for table in public_tables if table not in existing_tables]
             
             if not missing_tables:
-                logger.info(f"✅ Todas las tablas ya existen en '{client_name}'")
                 # Aún así, verificar que tienen datos iniciales
                 create_tenant_initial_data(client_name)
                 return
-            
-            logger.info(f"📋 Tablas faltantes en '{client_name}': {missing_tables}")
             
             # Crear tablas faltantes
             for table_name in missing_tables:
@@ -560,7 +536,6 @@ def migrate_existing_tenant_schema(client_name: str):
                         CREATE TABLE IF NOT EXISTS {client_name}.{table_name} 
                         (LIKE public.{table_name} INCLUDING ALL)
                     """))
-                    logger.info(f"  ✅ Tabla '{table_name}' agregada a '{client_name}'")
                 except Exception as table_error:
                     logger.error(f"  ❌ Error al crear tabla '{table_name}': {table_error}")
                     continue
@@ -569,8 +544,6 @@ def migrate_existing_tenant_schema(client_name: str):
             
             # Copiar datos iniciales para las nuevas tablas
             create_tenant_initial_data(client_name)
-            
-            logger.info(f"✅ Migración completada para '{client_name}'")
             
     except Exception as e:
         logger.error(f"❌ Error al migrar esquema '{client_name}': {e}")
@@ -591,10 +564,7 @@ def migrate_all_tenant_schemas():
             client_list = [row[0] for row in clients.fetchall()]
             
             if not client_list:
-                logger.info("ℹ️ No se encontraron clientes para migrar")
                 return
-            
-            logger.info(f"🚀 Iniciando migración para {len(client_list)} tenants: {client_list}")
             
             for client_name in client_list:
                 try:
@@ -602,8 +572,6 @@ def migrate_all_tenant_schemas():
                 except Exception as e:
                     logger.error(f"❌ Error al migrar tenant '{client_name}': {e}")
                     continue
-            
-            logger.info("✅ Migración masiva completada")
             
     except Exception as e:
         logger.error(f"❌ Error en migración masiva: {e}")
@@ -619,13 +587,11 @@ def setup_new_tenant(client_name: str):
     Esta función debe ser llamada desde el endpoint de registro de usuarios.
     """
     if not client_name or client_name.strip() == "":
-        logger.warning("⚠️ Nombre de cliente vacío, no se creará esquema")
         return False
         
     client_name = client_name.strip().lower()
     
     try:
-        logger.info(f"🏗️ Configurando nuevo tenant para cliente: '{client_name}'")
         
         # Verificar si el esquema ya existe
         with Session(engine) as session:
@@ -637,13 +603,9 @@ def setup_new_tenant(client_name: str):
             """).bindparams(schema_name=client_name)).scalar()
             
             if schema_exists:
-                logger.info(f"ℹ️ Esquema '{client_name}' ya existe, verificando completitud...")
                 migrate_existing_tenant_schema(client_name)
             else:
-                logger.info(f"🆕 Creando nuevo esquema para '{client_name}'...")
                 create_tenant_schema(client_name)
-        
-        logger.info(f"✅ Tenant '{client_name}' configurado correctamente")
         return True
         
     except Exception as e:

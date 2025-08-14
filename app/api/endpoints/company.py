@@ -87,8 +87,9 @@ async def update_company(
 @router.get("/", response_model=list[WepCompanyModel])
 def get_companyl( current_user: WepUserModel = Depends(verify_token),db: Session = Depends(get_tenant_session)):
    
-   # Para "shirkasoft", filtrar por status=True
-    if current_user.full_name == "shirkasoft":
+    source = getattr(current_user, 'source', 'unknown')
+    
+    if source == "website":
         query = select(WepCompanyModel).where(WepCompanyModel.status == True).order_by(WepCompanyModel.id)
     else:
     # Para otros usuarios, no filtrar (devolver todo)

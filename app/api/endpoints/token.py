@@ -12,6 +12,10 @@ import logging, json, os
 
 router = APIRouter()
 
+# Configurar logging para debug
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
 # Configuración de seguridad
 bcrypt_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
@@ -43,19 +47,18 @@ def parse_token_list(env_value: str) -> List[str]:
 # Parsear tokens
 FRONT_TOKENS = parse_token_list(os.getenv("FRONT_TOKENS", ""))
 
-# Token legacy para compatibilidad hacia atrás
-LEGACY_FRONT_TOKEN = os.getenv("FRONT_TOKEN", "")
-if LEGACY_FRONT_TOKEN and LEGACY_FRONT_TOKEN not in FRONT_TOKENS:
-    FRONT_TOKENS.append(LEGACY_FRONT_TOKEN)
-
 class MockUser:
     """Clase para crear usuarios mock desde tokens de frontend"""
-    def __init__(self, client: str, email: str = None, full_name: str = None, user_id: str = None):
+    def __init__(self, client: str, email: str = None, full_name: str = None, user_id: str = None, source: str = None):
         self.client = client
         self.email = email or f"frontend@{client}.com"
         self.full_name = full_name or f"Frontend User - {client}"
         self.id = user_id or "frontend"
+        self.source = source or "unknown"  # Valor por defecto
         self.password = "frontend"
+        
+        # Log para debug
+        logger.info(f"🔧 MockUser creado - client: {self.client}, source: {self.source}, email: {self.email}")
 
 def decode_frontend_token(token: str) -> Dict[str, Any]:
     """
@@ -71,8 +74,10 @@ def decode_frontend_token(token: str) -> Dict[str, Any]:
             algorithms=[ALGORITHM],
             options={"verify_exp": False}  # Deshabilitar verificación de expiración
         )
+        logger.info(f"🔓 Token decodificado exitosamente: {payload}")
         return payload
     except JWTError as e:
+        logger.warning(f"⚠️ Error decodificando token: {e}")
         return None
 
 def create_mock_user_from_token(token: str) -> MockUser:
@@ -89,19 +94,42 @@ def create_mock_user_from_token(token: str) -> MockUser:
         email = payload.get("email", f"frontend@{client}.com")
         full_name = payload.get("full_name", f"Frontend User - {client}")
         user_id = payload.get("id", "frontend")
+        source = payload.get("source", "website")
+        
+        logger.info(f"📝 Creando MockUser con datos del payload:")
+        logger.info(f"   - client: {client}")
+        logger.info(f"   - email: {email}")
+        logger.info(f"   - source: {source}")
+        logger.info(f"   - user_id: {user_id}")
               
         mock_user = MockUser(
             client=client,
             email=email,
             full_name=full_name,
-            user_id=str(user_id)
+            user_id=str(user_id),
+            source=source
         )
         
         return mock_user
     else:
         # Si no se puede decodificar, crear usuario por defecto
+        logger.warning("⚠️ No se pudo decodificar el token, creando usuario por defecto")
         mock_user = MockUser(client="shirkasoft", email="shirkasoft", full_name="shirkasoft")
         return mock_user
+
+# Función auxiliar para crear usuario extendido desde payload JWT
+class ExtendedUser:
+    """Clase para usuarios reales con campos adicionales del JWT"""
+    def __init__(self, user: WepUserModel, source: str = None):
+        # Copiar todos los atributos del usuario original
+        for attr in dir(user):
+            if not attr.startswith('_'):
+                setattr(self, attr, getattr(user, attr))
+        
+        # Agregar el campo source
+        self.source = source or "dashboard"
+        
+        logger.info(f"👤 ExtendedUser creado - email: {self.email}, source: {self.source}, client: {self.client}")
 
 # ----------------------------
 # Función para generar token (login)
@@ -133,6 +161,7 @@ async def login(
             "full_name": user.full_name,
             "email": user.email, 
             "client": user.client, 
+            "source": "dashboard",  # Agregar source para usuarios del dashboard
             "exp": datetime.now(timezone.utc) + timedelta(minutes=60)
         },
         settings.SECRET_KEY,  
@@ -147,46 +176,104 @@ async def login(
 
 async def verify_token(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
     
+    logger.info(f"🔍 Verificando token: {token[:50]}...")  # Solo primeros 50 chars por seguridad
+    
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Token inválido o expirado",
         headers={"WWW-Authenticate": "Bearer"},
     )
 
-    # Primero verificamos si es uno de los tokens de frontend
-    
-    if token in FRONT_TOKENS:
-        
-        mock_user = create_mock_user_from_token(token)
-        return mock_user
-    
+    # NUEVO: Intentamos decodificar cualquier token JWT primero
     try:
-        # Decodificar el token de usuario normal
+        # Decodificar sin verificar expiración para analizar el contenido
         payload = jwt.decode(
             token,
             settings.SECRET_KEY,
-            algorithms=[ALGORITHM]
+            algorithms=[ALGORITHM],
+            options={"verify_exp": False}
         )
         
-        email = payload.get("email")
-        if email is None:
-            raise credentials_exception
-
-        # Verificar si el usuario existe
-        user = db.exec(
-            select(WepUserModel).where(WepUserModel.email == email)
-        ).first()
+        logger.info(f"✅ Token JWT decodificado exitosamente")
+        logger.info(f"📄 Payload: {payload}")
         
-        if user is None:
-            raise credentials_exception
+        # Obtener el source del payload
+        source = payload.get("source", "dashboard")
+        email = payload.get("email")
+        
+        logger.info(f"🏷️ Source detectado: '{source}'")
+        logger.info(f"📧 Email detectado: '{email}'")
+        
+        # CASE 1: Token de WEBSITE (no verificar expiración, crear MockUser)
+        if source == "website":
+            logger.info("🌐 TOKEN DE WEBSITE DETECTADO - Creando MockUser")
+            
+            # Para tokens de website, crear MockUser directamente del payload
+            client = payload.get("client", "default")
+            full_name = payload.get("full_name", f"Website User - {client}")
+            user_id = payload.get("id", "website")
+            
+            mock_user = MockUser(
+                client=client,
+                email=email or f"website@{client}.com",
+                full_name=full_name,
+                user_id=str(user_id),
+                source=source
+            )
+            
+            logger.info(f"✅ MockUser creado para website - client: {mock_user.client}, source: {mock_user.source}")
+            return mock_user
+        
+        # CASE 2: Token de DASHBOARD (verificar expiración y usuario en BD)
+        else:
+            logger.info("🏢 TOKEN DE DASHBOARD DETECTADO - Validando usuario real")
+            
+            # Para tokens de dashboard, verificar expiración
+            try:
+                payload = jwt.decode(
+                    token,
+                    settings.SECRET_KEY,
+                    algorithms=[ALGORITHM]
+                    # verify_exp=True por defecto
+                )
+                logger.info("✅ Token de dashboard válido (no expirado)")
+            except JWTError as e:
+                logger.warning(f"⚠️ Token de dashboard expirado: {e}")
+                raise credentials_exception
+            
+            if email is None:
+                logger.warning("⚠️ Token de dashboard sin email")
+                raise credentials_exception
 
-        return user
+            # Verificar si el usuario existe en la BD
+            user = db.exec(
+                select(WepUserModel).where(WepUserModel.email == email)
+            ).first()
+            
+            if user is None:
+                logger.warning(f"⚠️ Usuario de dashboard no encontrado: {email}")
+                raise credentials_exception
 
+            # Crear ExtendedUser con el campo source del JWT
+            extended_user = ExtendedUser(user, source)
+            logger.info(f"✅ ExtendedUser creado para dashboard - email: {extended_user.email}, source: {extended_user.source}")
+            return extended_user
+        
     except JWTError as e:
+        logger.warning(f"⚠️ No es un JWT válido: {e}")
+        
+        # FALLBACK: Verificar si está en FRONT_TOKENS (sistema legacy)
+        if token in FRONT_TOKENS:
+            logger.info("📋 Token encontrado en FRONT_TOKENS (legacy)")
+            mock_user = create_mock_user_from_token(token)
+            return mock_user
+        
+        logger.error("❌ Token completamente inválido")
         raise credentials_exception
 
-async def get_current_tenant(current_user: WepUserModel = Depends(verify_token)) -> str:
+async def get_current_tenant(current_user = Depends(verify_token)) -> str:
     tenant = current_user.client
+    logger.info(f"🏢 Tenant actual: {tenant}")
     return tenant
 
 def get_tenant_session(client_name: str = Depends(get_current_tenant)) -> Generator[Session, None, None]:
@@ -201,6 +288,8 @@ def get_tenant_session(client_name: str = Depends(get_current_tenant)) -> Genera
             status_code=400,
             detail="Nombre de cliente inválido"
         )
+    
+    logger.info(f"🔌 Conectando a esquema: {client_name}")
     
     # Crear sesión
     with Session(engine) as session:
@@ -222,12 +311,14 @@ def get_tenant_session(client_name: str = Depends(get_current_tenant)) -> Genera
                     detail=f"Esquema para cliente '{client_name}' no encontrado"
                 )
             
+            logger.info(f"✅ Conectado exitosamente al esquema: {client_name}")
             yield session
             
         except HTTPException:
             # Re-lanzar excepciones HTTP
             raise
         except Exception as e:
+            logger.error(f"❌ Error de base de datos para cliente {client_name}: {e}")
             raise HTTPException(
                 status_code=500,
                 detail=f"Error de base de datos para cliente {client_name}"

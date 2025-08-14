@@ -105,8 +105,9 @@ async def update_news(
 @router.get("/", response_model=list[WepNewsModel])
 def get_news( current_user: WepUserModel = Depends(verify_token),db: Session = Depends(get_tenant_session)):
 
-    # Para "shirkasoft", filtrar por status=True
-    if current_user.full_name == "shirkasoft":
+    source = getattr(current_user, 'source', 'unknown')
+    
+    if source == "website":
         query = select(WepNewsModel).where(WepNewsModel.status == True).order_by(WepNewsModel.id)
     else:
         # Para otros usuarios, no filtrar (devolver todo)
