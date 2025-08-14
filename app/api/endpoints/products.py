@@ -65,12 +65,8 @@ async def create_product(
         db.add(product)
         db.commit()
         
-        # En lugar de refresh, obtenemos el producto recién creado con una nueva consulta
-        new_product = db.get(WepProductModel, product.id)
-        if not new_product:
-            raise HTTPException(status_code=500, detail="Producto creado pero no se pudo recuperar")
-        
-        return new_product
+        refreshed_product = db.merge(product)
+        return refreshed_product
         
     except HTTPException as he:
         # Eliminar archivo si hubo error después de guardarlo
