@@ -14,6 +14,7 @@ from .endpoints import news
 from .endpoints import products
 from .endpoints import emails
 from .endpoints import calendar
+from .endpoints import calendar2
 
 # Crear el router principal para la API v1
 api_router = APIRouter()
@@ -33,3 +34,4 @@ api_router.include_router(news.router, prefix="/news", tags=["News"])
 api_router.include_router(products.router, prefix="/product", tags=["Products"])
 api_router.include_router(emails.router, prefix="/emails", tags=["emails"])
 api_router.include_router(calendar.router, prefix="/calendar", tags=["Google Calendar"])
+api_router.include_router(calendar2.router, prefix="/calendar2", tags=["Google Calendar2"])
