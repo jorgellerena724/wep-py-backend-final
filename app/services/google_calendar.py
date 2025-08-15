@@ -26,7 +26,7 @@ class GoogleCalendarManager:
                 flow = InstalledAppFlow.from_client_secrets_file("client_secret_llerena.json", SCOPES)
                 creds = flow.run_local_server(port=0)
 
-            # Save the credentials for the next run
+            # salvando credentials para la proxima corrida
             with open("token.json", "w") as token:
                 token.write(creds.to_json())
 
