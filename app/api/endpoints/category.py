@@ -18,7 +18,7 @@ async def create_category(
         category = WepCategoryModel(title=title)
         db.add(category)
         db.commit()
-        db.refresh(category)
+        db.merge(category)
         return category
         
     except HTTPException:
@@ -29,8 +29,6 @@ async def create_category(
             status_code=500,
             detail=f"Error creando category: {str(e)}"
         )
-
-
 
 @router.patch("/{category_id}", response_model=WepCategoryModel)
 async def update_category(
@@ -51,7 +49,7 @@ async def update_category(
 
         # Confirmar cambios en la base de datos
         db.commit()
-        db.refresh(category)
+        db.merge(category)
         
         return category
 

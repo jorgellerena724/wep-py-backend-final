@@ -382,10 +382,15 @@ def create_tenant_schema(client_name: str):
             # 3. Crear todas las tablas en el esquema del cliente
             for table_name in tables_to_create:
                 try:
+                    # Crear tabla sin incluir defaults (para evitar dependencias de secuencias públicas)
                     session.exec(text(f"""
                         CREATE TABLE IF NOT EXISTS {client_name}.{table_name} 
-                        (LIKE public.{table_name} INCLUDING ALL)
+                        (LIKE public.{table_name} INCLUDING CONSTRAINTS INCLUDING INDEXES)
                     """))
+                    
+                    # Crear secuencias específicas para este tenant
+                    create_tenant_sequences(session, client_name, table_name)
+                    
                     logger.info(f"  ✅ Tabla '{table_name}' creada en esquema '{client_name}'")
                 except Exception as table_error:
                     logger.error(f"  ❌ Error al crear tabla '{table_name}': {table_error}")
@@ -399,6 +404,36 @@ def create_tenant_schema(client_name: str):
     except Exception as e:
         logger.error(f"❌ Error al crear esquema para tenant '{client_name}': {e}")
         raise
+
+def create_tenant_sequences(session: Session, client_name: str, table_name: str):
+    """Crea secuencias específicas para las tablas del tenant"""
+    # Obtener columnas seriales de la tabla
+    result = session.exec(text("""
+        SELECT column_name, column_default 
+        FROM information_schema.columns 
+        WHERE table_schema = 'public' 
+        AND table_name = :table_name 
+        AND column_default LIKE 'nextval%'
+    """).bindparams(table_name=table_name))
+    
+    for row in result:
+        column_name, default_value = row
+        # Extraer el nombre de la secuencia del valor por defecto
+        seq_match = re.search(r"nextval\('([^']+)'::regclass\)", default_value)
+        if seq_match:
+            public_seq_name = seq_match.group(1)
+            # Crear nombre de secuencia para el tenant
+            tenant_seq_name = f"{client_name}.{public_seq_name.split('.')[-1]}"
+            
+            # Crear nueva secuencia
+            session.exec(text(f"CREATE SEQUENCE IF NOT EXISTS {tenant_seq_name}"))
+            
+            # Asignar la nueva secuencia a la columna
+            session.exec(text(f"""
+                ALTER TABLE {client_name}.{table_name} 
+                ALTER COLUMN {column_name} 
+                SET DEFAULT nextval('{tenant_seq_name}')
+            """))
 
 def create_tenant_initial_data(client_name: str):
     """Copia TODOS los datos iniciales desde public a tenant automáticamente"""
@@ -465,6 +500,7 @@ def create_tenant_initial_data(client_name: str):
                             INSERT INTO {client_name}.{table_name} 
                             SELECT * FROM public.{table_name}
                         """))
+                        update_tenant_sequences(session, client_name, table_name)
                         logger.info(f"  ✅ {public_count} registros copiados de '{table_name}' a '{client_name}'")
                     else:
                         logger.warning(f"  ⚠️ No hay datos que copiar de 'public.{table_name}'")
@@ -478,6 +514,42 @@ def create_tenant_initial_data(client_name: str):
     except Exception as e:
         logger.error(f"❌ Error al copiar datos iniciales para tenant '{client_name}': {e}")
         raise
+    
+def update_tenant_sequences(session: Session, client_name: str, table_name: str):
+    """Actualiza las secuencias del tenant al valor máximo actual"""
+    # Obtener columnas seriales
+    result = session.exec(text("""
+        SELECT column_name 
+        FROM information_schema.columns 
+        WHERE table_schema = :client_name 
+        AND table_name = :table_name 
+        AND column_default LIKE 'nextval%'
+    """).bindparams(client_name=client_name, table_name=table_name))
+    
+    for row in result:
+        column_name = row[0]
+        # Obtener el valor máximo actual
+        max_val_result = session.exec(text(f"""
+            SELECT COALESCE(MAX({column_name}), 0) 
+            FROM {client_name}.{table_name}
+        """))
+        max_val = max_val_result.scalar()
+        
+        # Obtener nombre de la secuencia
+        seq_result = session.exec(text(f"""
+            SELECT column_default 
+            FROM information_schema.columns 
+            WHERE table_schema = :client_name 
+            AND table_name = :table_name 
+            AND column_name = :column_name
+        """).bindparams(client_name=client_name, table_name=table_name, column_name=column_name))
+        
+        seq_default = seq_result.scalar()
+        seq_match = re.search(r"nextval\('([^']+)'::regclass\)", seq_default)
+        if seq_match:
+            seq_name = seq_match.group(1)
+            # Actualizar la secuencia
+            session.exec(text(f"SELECT setval('{seq_name}', {max_val})"))
 
 def get_tenant_db(client_name: str) -> Generator:
     if not validate_schema_name(client_name):
