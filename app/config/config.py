@@ -24,6 +24,7 @@ class Settings(BaseSettings):
     MINIO_SECRET_KEY: str = Field(..., env="MINIO_SECRET_KEY")
     MINIO_SECURE: str = Field(default=True, env="MINIO_SECURE")
     MINIO_BUCKET_NAME: str = Field(..., env="MINIO_BUCKET_NAME")
+    USE_MINIO: bool = Field(True, env="USE_MINIO")
 
     @field_validator('UPLOADS')
     @classmethod

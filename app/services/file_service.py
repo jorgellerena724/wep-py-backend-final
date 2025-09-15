@@ -13,7 +13,10 @@ class FileService:
     
     @staticmethod
     def get_minio_client():
-        """Crea y devuelve un cliente de MinIO (singleton)"""
+        """Crea y devuelve un cliente de MinIO (singleton) solo si USE_MINIO es True"""
+        if not settings.USE_MINIO:
+            return None
+            
         if FileService._minio_client is None:
             FileService._minio_client = Minio(
                 settings.MINIO_ENDPOINT,
@@ -37,34 +40,37 @@ class FileService:
                 status_code=400,
                 detail=f"Solo se permiten imágenes o videos (MP4/MOV): {', '.join(allowed_types)}"
             )
-
+            
     @staticmethod
     async def save_file(file: UploadFile, client_name: str) -> str:
-        """Guarda archivos en MinIO organizados por cliente"""
+        """Guarda archivos en MinIO o sistema local según configuración"""
+        FileService.validate_file(file)
+        
+        # Generar nombre único
+        file_ext = os.path.splitext(file.filename)[1].lower()
+        filename = f"{uuid.uuid4()}{file_ext}"
+
+        if settings.USE_MINIO:
+            return await FileService._save_to_minio(file, filename, client_name)
+        else:
+            return await FileService._save_local(file, filename, client_name)
+        
+    @staticmethod
+    async def _save_to_minio(file: UploadFile, filename: str, client_name: str) -> str:
+        """Guarda archivo en MinIO"""
         try:
-            # Validar archivo
-            FileService.validate_file(file)
-            
-            # Generar nombre único
-            file_ext = os.path.splitext(file.filename)[1].lower()
-            filename = f"{uuid.uuid4()}{file_ext}"
-            
-            # Obtener cliente MinIO
             minio_client = FileService.get_minio_client()
-            
-            # Asegurarse que el bucket existe
+            if minio_client is None:
+                raise HTTPException(status_code=500, detail="MinIO no configurado")
+
             if not minio_client.bucket_exists(settings.MINIO_BUCKET_NAME):
                 minio_client.make_bucket(settings.MINIO_BUCKET_NAME)
-            
-            # Nombre del objeto en MinIO (cliente/nombre_archivo)
+
             object_name = f"{client_name}/{filename}"
-            
-            # Leer contenido y crear un stream de bytes
             content = await file.read()
             file_stream = BytesIO(content)
             file_size = len(content)
-            
-            # Subir archivo usando el stream
+
             minio_client.put_object(
                 bucket_name=settings.MINIO_BUCKET_NAME,
                 object_name=object_name,
@@ -80,54 +86,100 @@ class FileService:
                 status_code=500,
                 detail=f"Error de MinIO: {str(e)}"
             )
+
+    @staticmethod
+    async def _save_local(file: UploadFile, filename: str, client_name: str) -> str:
+        """Guarda archivo en sistema local"""
+        try:
+            # Crear directorio del cliente si no existe
+            client_path = Path(settings.UPLOADS) / client_name
+            client_path.mkdir(parents=True, exist_ok=True)
+            
+            file_path = client_path / filename
+            
+            content = await file.read()
+            with open(file_path, "wb") as f:
+                f.write(content)
+                
+            return filename
+            
         except Exception as e:
             raise HTTPException(
                 status_code=500,
-                detail=f"Error al guardar archivo: {str(e)}"
+                detail=f"Error al guardar archivo local: {str(e)}"
             )
 
     @staticmethod
     def delete_file(filename: str, client_name: str):
-        """Elimina archivo de MinIO"""
+        """Elimina archivo según el modo de almacenamiento configurado"""
+        if settings.USE_MINIO:
+            FileService._delete_from_minio(filename, client_name)
+        else:
+            FileService._delete_local(filename, client_name)
+
+    @staticmethod
+    def _delete_from_minio(filename: str, client_name: str):
         try:
             minio_client = FileService.get_minio_client()
-            object_name = f"{client_name}/{filename}"
-            minio_client.remove_object(settings.MINIO_BUCKET_NAME, object_name)
+            if minio_client:
+                object_name = f"{client_name}/{filename}"
+                minio_client.remove_object(settings.MINIO_BUCKET_NAME, object_name)
         except S3Error:
-            pass  # No fallar si no se puede eliminar
+            pass
+
+    @staticmethod
+    def _delete_local(filename: str, client_name: str):
+        try:
+            file_path = Path(settings.UPLOADS) / client_name / filename
+            if file_path.exists():
+                file_path.unlink()
+        except:
+            pass
 
     @staticmethod
     def get_file_url(filename: str, client_name: str, expires_seconds: int = 3600) -> str:
-        """Devuelve una URL temporal para acceder al archivo"""
+        """Obtiene URL del archivo según el modo configurado"""
+        if settings.USE_MINIO:
+            return FileService._get_minio_url(filename, client_name, expires_seconds)
+        else:
+            return FileService._get_local_url(filename, client_name)
+
+    @staticmethod
+    def _get_minio_url(filename: str, client_name: str, expires_seconds: int) -> str:
         try:
             minio_client = FileService.get_minio_client()
+            if minio_client is None:
+                raise HTTPException(status_code=500, detail="MinIO no configurado")
+                
             object_name = f"{client_name}/{filename}"
-            
-            # Generar URL presigned (temporal)
             return minio_client.presigned_get_object(
                 bucket_name=settings.MINIO_BUCKET_NAME,
                 object_name=object_name,
                 expires=expires_seconds
             )
-            
         except S3Error as e:
             raise HTTPException(
                 status_code=404,
-                detail=f"Archivo no encontrado: {str(e)}"
+                detail=f"Archivo no encontrado en MinIO: {str(e)}"
             )
 
     @staticmethod
+    def _get_local_url(filename: str, client_name: str) -> str:
+        file_path = Path(settings.UPLOADS) / client_name / filename
+        if not file_path.exists():
+            raise HTTPException(
+                status_code=404,
+                detail="Archivo local no encontrado"
+            )
+        return str(file_path.absolute())
+    
+    @staticmethod
     async def get_media(filename: str, client_name: str):
-        """Devuelve el archivo solicitado (imagen o video)"""
-        try:
-            url = FileService.get_file_url(filename, client_name)
+        """Devuelve el archivo según el modo configurado"""
+        if settings.USE_MINIO:
+            url = FileService._get_minio_url(filename, client_name, 3600)
             from fastapi.responses import RedirectResponse
             return RedirectResponse(url=url)
-            
-        except HTTPException:
-            raise
-        except Exception as e:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Error al recuperar imagen: {str(e)}"
-            )
+        else:
+            file_path = FileService._get_local_url(filename, client_name)
+            return FileResponse(file_path)
