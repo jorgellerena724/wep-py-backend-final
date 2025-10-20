@@ -17,6 +17,7 @@ class ProductRead(SQLModel):
     title: str
     description: str
     category: CategoryRead
+    cal_url: str
     variants: List[Dict]
     files: List[Dict]
 
@@ -27,6 +28,7 @@ async def create_product(
     title: str = Form(..., max_length=100),
     description: str = Form(...),
     category_id: int = Form(...),
+    cal_url: Optional[str] = Form(None),
     files: List[UploadFile] = File(...),  # Múltiples archivos
     file_titles: str = Form(...),  # JSON con títulos para cada archivo
     variants: str = Form(None),
@@ -78,6 +80,7 @@ async def create_product(
         # Crear producto
         product = WepProductModel(
             title=title,
+            cal_url=cal_url,
             description=description,
             category_id=category_id,
             variants=variants_list,
@@ -109,6 +112,7 @@ async def update_product(
     title: Optional[str] = Form(None, max_length=100),
     description: Optional[str] = Form(None),
     category_id: Optional[int] = Form(None),
+    cal_url: Optional[str] = Form(None),
     files: Optional[List[UploadFile]] = File(None),
     file_titles: Optional[str] = Form(None),
     variants: Optional[str] = Form(None),
@@ -127,6 +131,8 @@ async def update_product(
             product.description = description
         if category_id is not None:
             product.category_id = category_id
+        if cal_url is not None:
+            product.cal_url = cal_url
         if variants is not None:
             variants_list = json.loads(variants)
             if not isinstance(variants_list, list):
