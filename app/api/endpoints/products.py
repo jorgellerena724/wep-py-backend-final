@@ -17,7 +17,7 @@ class ProductRead(SQLModel):
     title: str
     description: str
     category: CategoryRead
-    cal_url: str
+    cal_url: Optional[str]
     variants: List[Dict]
     files: List[Dict]
 
