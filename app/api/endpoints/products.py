@@ -1,5 +1,5 @@
 import json
-from fastapi import APIRouter, UploadFile, Form, Depends, HTTPException, status
+from fastapi import APIRouter, File, UploadFile, Form, Depends, HTTPException, status
 from typing import Dict, Optional, List
 from sqlmodel import SQLModel, select, Session
 from app.api.endpoints.token import verify_token, get_tenant_session
@@ -16,9 +16,9 @@ class ProductRead(SQLModel):
     id: int
     title: str
     description: str
-    photo: str
     category: CategoryRead
     variants: List[Dict]
+    files: List[Dict]
 
 router = APIRouter()
 
@@ -27,12 +27,14 @@ async def create_product(
     title: str = Form(..., max_length=100),
     description: str = Form(...),
     category_id: int = Form(...),
-    photo: UploadFile = Form(...),
+    files: List[UploadFile] = File(...),  # Múltiples archivos
+    file_titles: str = Form(...),  # JSON con títulos para cada archivo
     variants: str = Form(None),
     current_user: WepUserModel = Depends(verify_token),
     db: Session = Depends(get_tenant_session)
 ):
     try:
+        # Procesar variantes
         variants_list = []
         if variants:
             try:
@@ -49,40 +51,51 @@ async def create_product(
             except Exception as e:
                 raise HTTPException(status_code=400, detail=str(e))
         
-        # Validar imagen después de procesar variantes para evitar guardar archivos innecesarios
-        FileService.validate_file(photo)
-        photo_filename = await FileService.save_file(photo, current_user.client)
+        # Procesar títulos de archivos
+        try:
+            titles_data = json.loads(file_titles)
+            if not isinstance(titles_data, list):
+                raise ValueError("file_titles debe ser una lista")
+            if len(titles_data) != len(files):
+                raise ValueError("La cantidad de títulos debe coincidir con la cantidad de archivos")
+        except json.JSONDecodeError:
+            raise HTTPException(status_code=400, detail="JSON inválido en file_titles")
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=str(e))
         
-        # Crear registro
+        # Validar y guardar archivos
+        saved_files = []
+        for i, file in enumerate(files):
+            FileService.validate_file(file)
+            filename = await FileService.save_file(file, current_user.client)
+            
+            # Crear objeto ProductImage
+            saved_files.append({
+                "title": titles_data[i],
+                "media": filename
+            })
+
+        # Crear producto
         product = WepProductModel(
             title=title,
             description=description,
-            photo=photo_filename,
             category_id=category_id,
-            variants=variants_list
+            variants=variants_list,
+            files=saved_files
         )
         
         db.add(product)
         db.commit()
+        db.merge(product)
         
-        refreshed_product = db.merge(product)
-        return refreshed_product
-        
-    except HTTPException as he:
-        # Eliminar archivo si hubo error después de guardarlo
-        if 'photo_filename' in locals():
-            try:
-                FileService.delete_file(photo_filename, current_user.client)
-            except:
-                pass
-        raise he
+        return product
         
     except Exception as e:
         db.rollback()
-        # Eliminar archivo si hubo error después de guardarlo
-        if 'photo_filename' in locals():
+        # Limpiar archivos guardados en caso de error
+        for saved_file in saved_files:
             try:
-                FileService.delete_file(photo_filename, current_user.client)
+                FileService.delete_file(saved_file["media"], current_user.client)
             except:
                 pass
         raise HTTPException(
@@ -96,51 +109,78 @@ async def update_product(
     title: Optional[str] = Form(None, max_length=100),
     description: Optional[str] = Form(None),
     category_id: Optional[int] = Form(None),
-    photo: Optional[UploadFile] = Form(None),
+    files: Optional[List[UploadFile]] = File(None),
+    file_titles: Optional[str] = Form(None),
     variants: Optional[str] = Form(None),
     current_user: WepUserModel = Depends(verify_token),
     db: Session = Depends(get_tenant_session)
 ):
     try:
-        # Obtener el producto existente
         product = db.get(WepProductModel, product_id)
         if not product:
             raise HTTPException(status_code=404, detail="Producto no encontrado")
 
-        # Actualizar campos si se proporcionan
+        # Actualizar campos básicos
         if title is not None:
             product.title = title
         if description is not None:
             product.description = description
+        if category_id is not None:
+            product.category_id = category_id
         if variants is not None:
-            variants_list = json.loads(variants)  # Recibe lista, no dict
+            variants_list = json.loads(variants)
             if not isinstance(variants_list, list):
                 raise HTTPException(400, "Las variantes deben ser una lista")
             product.variants = variants_list
-        if category_id is not None:
-            product.category_id = category_id
 
-        # Procesar imagen si se proporciona
-        if photo is not None:
-            # Validar tipo de imagen
-            FileService.validate_file(photo)
-            
-            # Eliminar imagen anterior si existe
-            if product.photo:
-                FileService.delete_file(product.photo, current_user.client)
-            
-            # Guardar nueva imagen
-            new_filename = await FileService.save_file(photo, current_user.client)
-            product.photo = new_filename
+        # Actualizar archivos - NUEVA LÓGICA
+        if file_titles is not None:
+            try:
+                titles_data = json.loads(file_titles)
+                if not isinstance(titles_data, list):
+                    raise ValueError("file_titles debe ser una lista")
+                
+                # Crear nueva lista de archivos
+                new_files = []
+                
+                # Procesar archivos existentes con nuevos títulos
+                for i, title in enumerate(titles_data):
+                    # Si hay archivos nuevos, usar esos
+                    if files and i < len(files):
+                        FileService.validate_file(files[i])
+                        filename = await FileService.save_file(files[i], current_user.client)
+                        new_files.append({
+                            "title": title,
+                            "media": filename
+                        })
+                    # Si no hay archivos nuevos, mantener los existentes pero actualizar títulos
+                    elif i < len(product.files):
+                        # Mantener el archivo existente pero actualizar el título
+                        new_files.append({
+                            "title": title,
+                            "media": product.files[i]["media"]
+                        })
+                    else:
+                        # Caso donde hay más títulos que archivos existentes
+                        raise ValueError("Cantidad de títulos no coincide con archivos")
+                
+                # Eliminar archivos que ya no están en la nueva lista
+                current_media_files = [f["media"] for f in new_files]
+                for old_file in product.files:
+                    if old_file["media"] not in current_media_files:
+                        try:
+                            FileService.delete_file(old_file["media"], current_user.client)
+                        except:
+                            pass
+                
+                product.files = new_files
+                
+            except Exception as e:
+                raise HTTPException(status_code=400, detail=str(e))
 
-        # Confirmar cambios en la base de datos
         db.commit()
-        
+        db.merge(product)
         return product
-
-    except HTTPException:
-        db.rollback()
-        raise
 
     except Exception as e:
         db.rollback()
@@ -190,8 +230,12 @@ def delete_product(
         raise HTTPException(status_code=404, detail="Producto no encontrado")
     
     try:
-        # Eliminar imagen asociada
-        FileService.delete_file(product.photo, current_user.client)
+        # Eliminar todos los archivos asociados
+        for file_data in product.files:
+            try:
+                FileService.delete_file(file_data["media"], current_user.client)
+            except:
+                pass  # Continuar aunque falle la eliminación de algún archivo
         
         # Eliminar registro
         db.delete(product)

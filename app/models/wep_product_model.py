@@ -6,6 +6,10 @@ from sqlalchemy import Text
 class ProductVariant(BaseModel):
     description: str
     price: float
+    
+class ProductImage(BaseModel):
+    title: str
+    media: str
 
 if TYPE_CHECKING:
     from .wep_category_model import WepCategoryModel
@@ -16,9 +20,14 @@ class WepProductModel(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     title: str        = Field(max_length=100, nullable=False)
     description : str = Field(sa_type=Text(), nullable=False)
-    photo: str        = Field(max_length=80, nullable=False)
     category_id: int = Field(foreign_key="category.id", nullable=False)
+    
     variants: List[ProductVariant] = Field(
+        sa_column=Column(JSON), 
+        default=[]
+    )
+    
+    files: List[ProductImage] = Field(
         sa_column=Column(JSON), 
         default=[]
     )
