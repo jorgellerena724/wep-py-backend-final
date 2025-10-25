@@ -9,7 +9,7 @@ from app.services.file_service import FileService
 router = APIRouter()
 
 @router.post("/", response_model=WepCarrouselModel)
-async def create_header(
+async def create_carousel(
     title: str = Form(..., max_length=100),
     description: str = Form(...),
     photo: UploadFile = Form(...),
@@ -41,7 +41,7 @@ async def create_header(
 
 
 @router.patch("/{carrousel_id}", response_model=WepCarrouselModel)
-async def update_carrousel(
+async def update_carousel(
     carrousel_id: int,
     title: Optional[str] = Form(None, max_length=100),
     description: Optional[str] = Form(None),
@@ -95,12 +95,12 @@ async def update_carrousel(
         # Revertir cambios en caso de cualquier otro error
         db.rollback()
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            status_code=500,
             detail=f"Error al actualizar el carrousel: {str(e)}"
         )
 
 @router.get("/", response_model=list[WepCarrouselModel])
-def get_carrousel( current_user: WepUserModel = Depends(verify_token),db: Session = Depends(get_tenant_session)):
+def get_carousel( current_user: WepUserModel = Depends(verify_token),db: Session = Depends(get_tenant_session)):
     
     source = getattr(current_user, 'source', 'unknown')
     
@@ -112,7 +112,7 @@ def get_carrousel( current_user: WepUserModel = Depends(verify_token),db: Sessio
     return db.exec(query).all()
 
 @router.get("/{carrousel_id}", response_model=WepCarrouselModel)
-def get_carrousel(carrousel_id: int, 
+def get_carousel(carrousel_id: int, 
     current_user: WepUserModel = Depends(verify_token),
     db: Session = Depends(get_tenant_session)):
 
@@ -122,7 +122,7 @@ def get_carrousel(carrousel_id: int,
     return carrousel
 
 @router.delete("/{carrousel_id}", status_code=204)
-def delete_carrousel(carrousel_id: int, current_user: WepUserModel = Depends(verify_token),
+def delete_carousel(carrousel_id: int, current_user: WepUserModel = Depends(verify_token),
      db: Session = Depends(get_tenant_session)):
     
     carrousel = db.get(WepCarrouselModel, carrousel_id)

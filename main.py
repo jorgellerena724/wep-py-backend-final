@@ -4,7 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 from app.api.router import api_router
 from app.config.config import settings
-from app.config.database import init_database, migrate_all_tenant_schemas
+from app.config.database import init_database
 from fastapi.staticfiles import StaticFiles
 import logging
 

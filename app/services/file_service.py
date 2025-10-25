@@ -33,12 +33,14 @@ class FileService:
                          "image/webp",
                          "image/x-icon",
                          "video/mp4",
-                         "video/quicktime"
+                         "video/quicktime",
+                         "application/pdf",
+                         "application/zip"
                          ]
         if file.content_type not in allowed_types:
             raise HTTPException(
                 status_code=400,
-                detail=f"Solo se permiten imágenes o videos (MP4/MOV): {', '.join(allowed_types)}"
+                detail=f"Solo se permiten imágenes o videos: {', '.join(allowed_types)}"
             )
             
     @staticmethod
