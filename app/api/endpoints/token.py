@@ -17,45 +17,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Configuración de seguridad
-# Usar bcrypt directamente en lugar de passlib para evitar incompatibilidades
-import bcrypt
-
 bcrypt_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-
-def verify_password(plain_password: str, hashed_password: str) -> bool:
-    """Verificar password usando bcrypt directamente"""
-    logger.info(f"🔐 Verificando password con función verify_password")
-    logger.info(f"🔐 Hash recibido: {hashed_password[:30]}...")
-    
-    try:
-        # Intentar con passlib primero
-        logger.info("🔄 Intentando verificación con passlib...")
-        result = bcrypt_context.verify(plain_password, hashed_password)
-        logger.info(f"✅ Verificación con passlib: {result}")
-        return result
-    except (ValueError, AttributeError, Exception) as e:
-        logger.warning(f"⚠️ Error con passlib: {type(e).__name__} - {e}")
-        logger.info("🔄 Intentando con bcrypt directo...")
-        # Fallback: usar bcrypt directamente
-        try:
-            # Truncar password si es necesario
-            password_bytes = plain_password.encode('utf-8')
-            if len(password_bytes) > 72:
-                logger.warning(f"⚠️ Truncando password a 72 bytes")
-                password_bytes = password_bytes[:72]
-            
-            # El hash ya está en bytes o string, verificar
-            if isinstance(hashed_password, str):
-                hash_bytes = hashed_password.encode('utf-8')
-            else:
-                hash_bytes = hashed_password
-                
-            result = bcrypt.checkpw(password_bytes, hash_bytes)
-            logger.info(f"✅ Verificación con bcrypt directo: {result}")
-            return result
-        except Exception as e2:
-            logger.error(f"❌ Error verificando con bcrypt directo: {type(e2).__name__} - {e2}")
-            return False
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 ALGORITHM = "HS256"
 
@@ -180,73 +142,31 @@ async def login(
     db: Session = Depends(get_db)
 ):
     
-    logger.info("=" * 60)
-    logger.info("🔐 INICIANDO PROCESO DE LOGIN")
-    logger.info(f"📧 Email recibido: {email}")
-    logger.info(f"🔑 Password recibido: {'*' * len(password)} (longitud: {len(password)})")
-    logger.info("=" * 60)
-    
     # 1. Verificar si el usuario existe
-    logger.info("🔍 Buscando usuario en base de datos...")
     user = db.exec(
         select(WepUserModel).where(WepUserModel.email == email)
     ).first()
     
     if not user:
-        logger.error(f"❌ Usuario no encontrado: {email}")
         raise HTTPException(status_code=404, detail="Email no registrado")
-    
-    logger.info(f"✅ Usuario encontrado: {user.full_name}")
-    logger.info(f"📋 Usuario ID: {user.id}")
-    logger.info(f"🏢 Usuario Client: {user.client}")
 
     # 2. Verificar contraseña con bcrypt 
-    logger.info(f"🔍 Verificando contraseña para usuario: {email}")
-    logger.info(f"🔍 Longitud de password ingresado: {len(password)} caracteres")
-    logger.info(f"🔍 Hash almacenado comienza con: {user.password[:20] if user.password else 'None'}...")
-    
-    try:
-        # Truncar password a 72 bytes si es necesario (limitación de bcrypt)
-        password_bytes = password.encode('utf-8')
-        if len(password_bytes) > 72:
-            logger.warning(f"⚠️ Password truncado a 72 bytes (original: {len(password_bytes)} bytes)")
-            password_bytes = password_bytes[:72]
-        
-        is_valid = verify_password(password, user.password)
-        logger.info(f"🔍 Resultado verificación: {is_valid}")
-        
-        if not is_valid:
-            raise HTTPException(status_code=401, detail="Contraseña incorrecta")
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"❌ Error verificando contraseña: {e}")
-        logger.error(f"❌ Tipo de error: {type(e).__name__}")
-        raise HTTPException(status_code=401, detail="Error al verificar contraseña")
+    if not bcrypt_context.verify(password, user.password):
+        raise HTTPException(status_code=401, detail="Contraseña incorrecta")
 
     # 3. Generar token JWT firmado con HS256
-    logger.info("🎫 Generando token JWT...")
-    token_payload = {
-        "id": str(user.id),
-        "full_name": user.full_name,
-        "email": user.email, 
-        "client": user.client, 
-        "source": "dashboard",
-        "exp": datetime.now(timezone.utc) + timedelta(minutes=60)
-    }
-    logger.info(f"📄 Token payload: {token_payload}")
-    
     access_token = jwt.encode(
-        token_payload,
+        {
+            "id": str(user.id),
+            "full_name": user.full_name,
+            "email": user.email, 
+            "client": user.client, 
+            "source": "dashboard",  # Agregar source para usuarios del dashboard
+            "exp": datetime.now(timezone.utc) + timedelta(minutes=60)
+        },
         settings.SECRET_KEY,  
         algorithm=ALGORITHM
     )
-    
-    logger.info("✅ Token generado exitosamente")
-    logger.info(f"🎫 Token (primeros 50 chars): {access_token[:50]}...")
-    logger.info("=" * 60)
-    logger.info("✅ LOGIN EXITOSO")
-    logger.info("=" * 60)
 
     return {"access_token": access_token, "token_type": "bearer"}
 
