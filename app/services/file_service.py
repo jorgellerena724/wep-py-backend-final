@@ -35,12 +35,24 @@ class FileService:
                          "video/mp4",
                          "video/quicktime",
                          "application/pdf",
-                         "application/zip"
+                         "application/zip",
+                         "application/x-zip-compressed",
+                         "application/octet-stream"  # Para archivos ZIP que no tienen MIME específico
                          ]
-        if file.content_type not in allowed_types:
+        
+        # Validación especial para archivos ZIP
+        file_ext = os.path.splitext(file.filename)[1].lower() if file.filename else ""
+        if file_ext == ".zip":
+            # Si es un archivo ZIP, permitir varios tipos MIME comunes
+            zip_types = ["application/zip", "application/x-zip-compressed", "application/octet-stream"]
+            if file.content_type not in zip_types:
+                # Si el content_type no es reconocido como ZIP, pero la extensión es .zip, permitirlo
+                # Esto maneja casos donde el navegador no detecta correctamente el tipo MIME
+                pass  # Permitir el archivo
+        elif file.content_type not in allowed_types:
             raise HTTPException(
                 status_code=400,
-                detail=f"Solo se permiten imágenes o videos: {', '.join(allowed_types)}"
+                detail=f"Solo se permiten imágenes, videos, PDF y archivos ZIP. Tipo recibido: {file.content_type}, archivo: {file.filename}"
             )
             
     @staticmethod
