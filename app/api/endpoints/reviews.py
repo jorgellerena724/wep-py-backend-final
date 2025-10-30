@@ -28,7 +28,7 @@ async def create_reviews(
         reviews = WepReviewsModel(title=title, description=description, photo=photo_filename)
         db.add(reviews)
         db.commit()
-        db.refresh(reviews)
+        db.merge(reviews)
         return reviews
         
     except HTTPException:
@@ -80,7 +80,7 @@ async def update_reviews(
 
         # Confirmar cambios en la base de datos
         db.commit()
-        db.refresh(reviews)
+        db.merge(reviews)
         
         return reviews
 

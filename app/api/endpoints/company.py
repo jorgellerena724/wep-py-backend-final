@@ -27,7 +27,7 @@ async def create_company(
         company = WepCompanyModel(title=title, description=description, photo=photo_filename)
         db.add(company)
         db.commit()
-        db.refresh(company)
+        db.merge(company)
         return company
         
     except HTTPException:
@@ -71,7 +71,7 @@ async def update_company(
             company.photo = await FileService.save_file(photo, current_user.client)
 
         db.commit()
-        db.refresh(company)
+        db.merge(company)
         return company
 
     except HTTPException:

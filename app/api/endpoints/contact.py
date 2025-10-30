@@ -21,7 +21,7 @@ async def create_contact(
         contact = WepContactModel(email=email, phone=phone, address=address)
         db.add(contact)
         db.commit()
-        db.refresh(contact)
+        db.merge(contact)
         return contact
         
     except HTTPException:
@@ -61,7 +61,7 @@ async def update_contact(
 
         # Confirmar cambios en la base de datos
         db.commit()
-        db.refresh(contact)
+        db.merge(contact)
         
         return contact
 

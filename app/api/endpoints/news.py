@@ -31,7 +31,7 @@ async def create_news(
         news = WepNewsModel(title=title, description=description,fecha=fecha, photo=photo_filename)
         db.add(news)
         db.commit()
-        db.refresh(news)
+        db.merge(news)
         return news
         
     except HTTPException:
@@ -81,7 +81,7 @@ async def update_news(
 
         # Confirmar cambios
         db.commit()
-        db.refresh(news)
+        db.merge(news)
         
         return news
 

@@ -26,7 +26,7 @@ async def create_header(
         header = WepHeaderModel(name=name, logo=logo_filename)
         db.add(header)
         db.commit()
-        db.refresh(header)
+        db.merge(header)
         return header
         
     except HTTPException:
@@ -74,7 +74,7 @@ async def update_header(
 
         # Confirmar cambios en la base de datos
         db.commit()
-        db.refresh(header)
+        db.merge(header)
         
         return header
 

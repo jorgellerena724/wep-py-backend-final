@@ -73,7 +73,7 @@ async def create_user(
 
     db.add(new_user)
     db.commit()
-    db.refresh(new_user)
+    db.merge(new_user)
 
     return {
         "message": "Usuario creado exitosamente",
@@ -113,7 +113,7 @@ async def update_user(
     # 3. Guardar cambios
     db.add(user)
     db.commit()
-    db.refresh(user)
+    db.merge(user)
 
     return {
         "message": "Usuario actualizado",

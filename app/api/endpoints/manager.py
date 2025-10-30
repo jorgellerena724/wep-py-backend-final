@@ -31,7 +31,7 @@ async def create_manager(
         manager = WepManagerModel(title=title, description=description,charge=charge, photo=photo_filename)
         db.add(manager)
         db.commit()
-        db.refresh(manager)
+        db.merge(manager)
         return manager
         
     except HTTPException:
@@ -89,7 +89,7 @@ async def update_manager(
 
         # Confirmar cambios en la base de datos
         db.commit()
-        db.refresh(manager)
+        db.merge(manager)
         
         return manager
 

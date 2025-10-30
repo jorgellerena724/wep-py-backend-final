@@ -27,7 +27,7 @@ async def create_carousel(
         carrousel = WepCarrouselModel(title=title, description=description, photo=photo_filename)
         db.add(carrousel)
         db.commit()
-        db.refresh(carrousel)
+        db.merge(carrousel)
         return carrousel
         
     except HTTPException:
@@ -82,7 +82,7 @@ async def update_carousel(
 
         # Confirmar cambios en la base de datos
         db.commit()
-        db.refresh(carrousel)
+        db.merge(carrousel)
         
         return carrousel
 
