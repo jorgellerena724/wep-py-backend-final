@@ -25,11 +25,12 @@ class Settings(BaseSettings):
     MINIO_SECURE: str = Field(default=True, env="MINIO_SECURE")
     MINIO_BUCKET_NAME: str = Field(..., env="MINIO_BUCKET_NAME")
     USE_MINIO: bool = Field(True, env="USE_MINIO")
+    USE_SQLITE: bool = Field(False, env="USE_SQLITE")
+    SQLITE_DB_PATH: str = Field("wep_database.db", env="SQLITE_DB_PATH")
 
     @field_validator('UPLOADS')
     @classmethod
     def validate_uploads_path(cls, v: str) -> str:
-       
         uploads_path = Path(v)
         if not uploads_path.is_absolute():
             uploads_path = Path.cwd() / uploads_path
@@ -37,6 +38,26 @@ class Settings(BaseSettings):
         uploads_path.mkdir(parents=True, exist_ok=True)
         
         return str(uploads_path)
+
+    @field_validator('SQLITE_DB_PATH')
+    @classmethod
+    def validate_sqlite_path(cls, v: str) -> str:
+        sqlite_path = Path(v)
+        if not sqlite_path.is_absolute():
+            sqlite_path = Path.cwd() / sqlite_path
+        
+        # Asegurar que el directorio padre existe
+        sqlite_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        return str(sqlite_path)
+
+    def get_database_url(self) -> str:
+        """Retorna la URL de base de datos según la configuración"""
+        if self.USE_SQLITE:
+            return f"sqlite:///{self.SQLITE_DB_PATH}"
+        else:
+            # Aseguramos que use 'postgresql://' en lugar de 'postgres://'
+            return self.WEP_DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
     class Config:
         env_file = ".env"
