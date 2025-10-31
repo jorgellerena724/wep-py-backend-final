@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 bcrypt_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 ALGORITHM = "HS256"
+is_sqlite = settings.USE_SQLITE
 
 # Lista de tokens de frontend permitidos (formato JSON como ALLOWED_HOSTS)
 def parse_token_list(env_value: str) -> List[str]:
@@ -278,23 +279,32 @@ async def get_current_tenant(current_user = Depends(verify_token)) -> str:
 
 def get_tenant_session(client_name: str = Depends(get_current_tenant)) -> Generator[Session, None, None]:
     """
-    Dependencia que proporciona una sesión de base de datos configurada 
-    para el esquema del tenant específico
+    Dependencia que proporciona una sesión de base de datos según el tipo de BD:
+    
+    - SQLite: Sesión simple sin multitenant (todas las tablas compartidas)
+    - PostgreSQL: Sesión con search_path configurado al esquema del tenant
     """
     
-    # Validar nombre del esquema
     if not client_name or not client_name.strip():
         raise HTTPException(
             status_code=400,
             detail="Nombre de cliente inválido"
         )
     
-    logger.info(f"🔌 Conectando a esquema: {client_name}")
-    
-    # Crear sesión
     with Session(engine) as session:
         try:
-            # Configurar search_path para el tenant
+            # ====== SQLITE: SIN MULTITENANT ======
+            if is_sqlite:
+                logger.info(f"✅ SQLite: Sesión simple (sin multitenant) para '{client_name}'")
+                # Simplemente retornar la sesión sin hacer nada más
+                yield session
+                # No hay finally, no hay search_path, nada
+                return
+            
+            # ====== POSTGRESQL: CON MULTITENANT ======
+            logger.info(f"🔌 PostgreSQL: Conectando a esquema '{client_name}'")
+            
+            # Configurar search_path al esquema del tenant
             session.exec(text(f"SET search_path TO {client_name}, public"))
             
             # Verificar que el esquema existe
@@ -308,24 +318,27 @@ def get_tenant_session(client_name: str = Depends(get_current_tenant)) -> Genera
             if not schema_check:
                 raise HTTPException(
                     status_code=404,
-                    detail=f"Esquema para cliente '{client_name}' no encontrado"
+                    detail=f"Esquema '{client_name}' no encontrado"
                 )
             
-            logger.info(f"✅ Conectado exitosamente al esquema: {client_name}")
+            logger.info(f"✅ PostgreSQL: Conectado a esquema '{client_name}'")
             yield session
             
         except HTTPException:
-            # Re-lanzar excepciones HTTP
             raise
+            
         except Exception as e:
-            logger.error(f"❌ Error de base de datos para cliente {client_name}: {e}")
+            logger.error(f"❌ Error de base de datos para cliente '{client_name}': {e}")
             raise HTTPException(
                 status_code=500,
-                detail=f"Error de base de datos para cliente {client_name}"
+                detail=f"Error de base de datos: {str(e)}"
             )
+            
         finally:
-            # Restaurar search_path por seguridad
-            try:
-                session.exec(text("SET search_path TO public"))
-            except Exception as e:
-                logger.warning(f"⚠️ Error al restaurar search_path: {e}")
+            # Solo restaurar search_path en PostgreSQL
+            if not is_sqlite:
+                try:
+                    session.exec(text("SET search_path TO public"))
+                    logger.debug("✅ Search path restaurado a 'public'")
+                except Exception as e:
+                    logger.warning(f"⚠️ Error al restaurar search_path")

@@ -529,8 +529,7 @@ def get_all_tables_except_user():
 def create_tenant_schema(client_name: str):
     """Crea un esquema para un nuevo tenant (solo para PostgreSQL)"""
     if is_sqlite:
-        logger.info(f"⏭️ SQLite: No se crean esquemas, usando tablas planas para tenant '{client_name}'")
-        create_tenant_initial_data(client_name)
+        logger.info(f"⏭️ SQLite: Ignorando creación de esquema para '{client_name}' (no necesario)")
         return
     
     if not validate_schema_name(client_name):
@@ -621,6 +620,10 @@ def create_tenant_sequences(session: Session, client_name: str, table_name: str)
 
 def create_tenant_initial_data(client_name: str):
     """Copia TODOS los datos iniciales desde public a tenant automáticamente"""
+    if is_sqlite:
+        logger.info(f"⏭️ SQLite: Ignorando datos iniciales para '{client_name}' (no necesario)")
+        return
+    
     if not validate_schema_name(client_name):
         raise ValueError(f"Nombre de esquema inválido: {client_name}")
         
@@ -802,16 +805,17 @@ def get_tenant_db(client_name: str) -> Generator:
         raise ValueError(f"Nombre de esquema inválido: {client_name}")
     
     with Session(engine) as session:
+        # SQLite: sesión simple
+        if is_sqlite:
+            yield session
+            return  # ⚠️ SALIR AQUÍ, NO EJECUTAR CÓDIGO POSTGRESQL
+        
+        # PostgreSQL: configurar search_path
         try:
-            if not is_sqlite:
-                # Configurar búsqueda en el esquema del cliente + public
-                session.exec(text(f"SET search_path TO {client_name}, public"))
-            # En SQLite, todas las tablas están en el mismo espacio
+            session.exec(text(f"SET search_path TO {client_name}, public"))
             yield session
         finally:
-            if not is_sqlite:
-                # Restaurar configuración original
-                session.exec(text("SET search_path TO public"))
+            session.exec(text("SET search_path TO public"))
 
 def migrate_existing_tenant_schema(client_name: str):
     """Migra un esquema de tenant existente agregando tablas faltantes (solo PostgreSQL)"""
@@ -924,7 +928,7 @@ def setup_new_tenant(client_name: str):
     try:
         # Para SQLite, simplemente creamos datos iniciales
         if is_sqlite:
-            create_tenant_initial_data(client_name)
+            logger.info(f"⏭️ SQLite: No se configura multitenant para '{client_name}'")
             return True
         
         # Para PostgreSQL, crear esquema completo
