@@ -2,7 +2,7 @@ from typing import TYPE_CHECKING, Optional
 from sqlmodel import Field, Relationship, SQLModel
 
 if TYPE_CHECKING:
-    from .wep_publication_category import WepPublicationCategoryModel
+    from .wep_publication_category_model import WepPublicationCategoryModel
 
 class WepPublicationModel(SQLModel, table=True):
     __tablename__ = "publication"

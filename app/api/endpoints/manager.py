@@ -1,10 +1,23 @@
 from fastapi import APIRouter, UploadFile, Form, Depends, HTTPException, status
 from typing import Optional
-from sqlmodel import select, Session
+from sqlmodel import SQLModel, select, Session
+from sqlalchemy.orm import selectinload
 from app.api.endpoints.token import verify_token, get_tenant_session
 from app.models.wep_user_model import WepUserModel
 from app.models.wep_manager_model import WepManagerModel
 from app.services.file_service import FileService
+
+class CategoryRead(SQLModel):
+    id: int
+    title: str
+    
+class ManagerRead(SQLModel):
+    id: int
+    title: str
+    description: str
+    charge: str
+    manager_category: Optional[CategoryRead]
+    photo: str | None   
 
 router = APIRouter()
 
@@ -14,6 +27,7 @@ async def create_manager(
     description: str = Form(...),
     charge: str = Form(...,max_length=100),
     photo: Optional[UploadFile] = Form(None),
+    manager_category_id: Optional[int] = Form(None),
     current_user: WepUserModel = Depends(verify_token),
     db: Session = Depends(get_tenant_session)
 ):
@@ -28,7 +42,7 @@ async def create_manager(
             photo_filename = await FileService.save_file(photo, current_user.client)
         
         # Crear registro
-        manager = WepManagerModel(title=title, description=description,charge=charge, photo=photo_filename)
+        manager = WepManagerModel(title=title, description=description,charge=charge, photo=photo_filename, manager_category_id=manager_category_id)
         db.add(manager)
         db.commit()
         db.merge(manager)
@@ -49,7 +63,8 @@ async def update_manager(
     manager_id: int,
     title: Optional[str] = Form(..., max_length=100),
     description: Optional[str] = Form(...),
-    charge: Optional[str]= Form(...,max_length=100),
+    charge: Optional[str] = Form(...,max_length=100),
+    manager_category_id: Optional[int] = Form(None),
     photo: Optional[UploadFile] = Form(None),
     remove_photo: Optional[bool] = Form(False),
     current_user: WepUserModel = Depends(verify_token),
@@ -68,6 +83,10 @@ async def update_manager(
         # Actualizar description si se proporciona
         if description is not None:
             manager.description = description
+            
+        # Actualizar manager_category_id si se proporciona
+        if manager_category_id is not None:
+            manager.manager_category_id = manager_category_id    
 
         # Actualizar charge si se proporciona
         if charge is not None:
@@ -106,11 +125,15 @@ async def update_manager(
             detail=f"Error al actualizar el manager: {str(e)}"
         )
 
-@router.get("/", response_model=list[WepManagerModel])
+@router.get("/", response_model=list[ManagerRead])
 def get_manager( current_user: WepUserModel = Depends(verify_token),db: Session = Depends(get_tenant_session)):
-    return db.exec(select(WepManagerModel).order_by(WepManagerModel.id)).all()
+    
+    query = select(WepManagerModel).options(selectinload(WepManagerModel.manager_category)).order_by(WepManagerModel.id)
+    
+    man = db.exec(query).all()
+    return [ManagerRead.model_validate(p) for p in man]
 
-@router.get("/{manager_id}", response_model=WepManagerModel)
+@router.get("/{manager_id}", response_model=ManagerRead)
 def get_manager(manager_id: int, 
     current_user: WepUserModel = Depends(verify_token),
     db: Session = Depends(get_tenant_session)):
