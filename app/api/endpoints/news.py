@@ -15,7 +15,7 @@ router = APIRouter()
 async def create_news(
     title: str = Form(..., max_length=100),
     description: str = Form(...),
-    fecha: date = Form(...),
+    fecha: Optional[date] = Form(None),
     photo: UploadFile = Form(...),
     current_user: WepUserModel = Depends(verify_token),
     db: Session = Depends(get_tenant_session)
@@ -28,7 +28,7 @@ async def create_news(
         photo_filename = await FileService.save_file(photo, current_user.client)
         
         # Crear registro
-        news = WepNewsModel(title=title, description=description,fecha=fecha, photo=photo_filename)
+        news = WepNewsModel(title=title, description=description, fecha=fecha, photo=photo_filename)
         db.add(news)
         db.commit()
         db.merge(news)
@@ -49,7 +49,7 @@ async def update_news(
     news_id: int,
     title: Optional[str] = Form(None, max_length=100),
     description: Optional[str] = Form(None),
-    fecha: Optional[date] = Form(None),
+    fecha: Optional[str] = Form(None),  # Cambiar a str para poder detectar cadena vacía
     status: Optional[bool] = Form(None),
     photo: Optional[UploadFile] = File(None),
     current_user: WepUserModel = Depends(verify_token),
@@ -66,8 +66,23 @@ async def update_news(
             news.title = title
         if description is not None:
             news.description = description
+        
+        # Manejar fecha: si se envía como cadena vacía, poner NULL; si tiene valor, convertir a date
         if fecha is not None:
-            news.fecha = fecha
+            fecha_str = fecha.strip() if fecha else ""
+            if fecha_str == "":
+                # Cadena vacía significa eliminar la fecha (poner NULL)
+                news.fecha = None
+            else:
+                # Intentar parsear la fecha
+                try:
+                    news.fecha = date.fromisoformat(fecha_str)
+                except ValueError:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Formato de fecha inválido: {fecha}. Use formato YYYY-MM-DD"
+                    )
+        
         if status is not None:
             news.status = status
 

@@ -292,6 +292,105 @@ def create_public_initial_data():
         logger.error(f"❌ Error al crear datos iniciales públicos: {e}")
         raise
 
+def migrate_news_fecha_column():
+    """Migra la columna fecha en la tabla news para permitir NULL"""
+    try:
+        with Session(engine) as session:
+            # Verificar si la tabla news existe
+            if is_sqlite:
+                table_exists_result = session.exec(text("""
+                    SELECT COUNT(*) FROM sqlite_master 
+                    WHERE type='table' AND name='news'
+                """))
+                table_count = table_exists_result.scalar()
+                if table_count == 0:
+                    logger.info("⏭️ Tabla news no existe aún, se creará con la estructura correcta")
+                    return
+                
+                # SQLite no soporta ALTER COLUMN directamente, necesitamos recrear la tabla
+                # Verificar si la columna fecha existe y tiene restricción NOT NULL
+                result = session.exec(text("""
+                    SELECT sql FROM sqlite_master 
+                    WHERE type='table' AND name='news'
+                """))
+                table_sql = result.scalar()
+                
+                if table_sql and 'fecha' in table_sql:
+                    # Verificar si necesita migración (buscar 'fecha' seguido de NOT NULL)
+                    # Patrón: fecha DATE NOT NULL o fecha NOT NULL
+                    fecha_pattern = r'fecha\s+\w*\s*NOT\s+NULL'
+                    needs_migration = re.search(fecha_pattern, table_sql, re.IGNORECASE) is not None
+                    
+                    if needs_migration:
+                        logger.info("🔧 Migrando columna fecha en tabla news (SQLite)...")
+                        
+                        # Crear tabla temporal con la nueva estructura
+                        session.exec(text("""
+                            CREATE TABLE news_new (
+                                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                                title VARCHAR(100) NOT NULL,
+                                description TEXT NOT NULL,
+                                fecha DATE,
+                                photo VARCHAR(80) NOT NULL,
+                                status BOOLEAN NOT NULL DEFAULT 1
+                            )
+                        """))
+                        
+                        # Copiar datos de la tabla antigua a la nueva
+                        session.exec(text("""
+                            INSERT INTO news_new (id, title, description, fecha, photo, status)
+                            SELECT id, title, description, fecha, photo, status
+                            FROM news
+                        """))
+                        
+                        # Eliminar tabla antigua
+                        session.exec(text("DROP TABLE news"))
+                        
+                        # Renombrar tabla nueva
+                        session.exec(text("ALTER TABLE news_new RENAME TO news"))
+                        
+                        session.commit()
+                        logger.info("✅ Migración de columna fecha completada (SQLite)")
+                    else:
+                        logger.info("⏭️ Columna fecha ya permite NULL (SQLite)")
+            else:
+                # PostgreSQL: usar ALTER TABLE directamente
+                # Verificar si la tabla existe
+                table_exists = session.exec(text("""
+                    SELECT EXISTS (
+                        SELECT FROM information_schema.tables 
+                        WHERE table_schema = 'public' 
+                        AND table_name = 'news'
+                    )
+                """))
+                
+                if not table_exists.scalar():
+                    logger.info("⏭️ Tabla news no existe aún, se creará con la estructura correcta")
+                    return
+                
+                # Verificar si la columna permite NULL
+                result = session.exec(text("""
+                    SELECT is_nullable 
+                    FROM information_schema.columns 
+                    WHERE table_schema = 'public' 
+                    AND table_name = 'news' 
+                    AND column_name = 'fecha'
+                """))
+                
+                is_nullable = result.scalar()
+                
+                if is_nullable == 'NO':
+                    logger.info("🔧 Migrando columna fecha en tabla news (PostgreSQL)...")
+                    session.exec(text("ALTER TABLE public.news ALTER COLUMN fecha DROP NOT NULL"))
+                    session.commit()
+                    logger.info("✅ Migración de columna fecha completada (PostgreSQL)")
+                else:
+                    logger.info("⏭️ Columna fecha ya permite NULL (PostgreSQL)")
+                
+    except Exception as e:
+        # Si la tabla no existe o ya está migrada, no es un error crítico
+        logger.warning(f"⚠️ No se pudo migrar columna fecha (puede que ya esté migrada): {e}")
+
 def init_database():
     """Inicializa la base de datos - función principal"""
     
@@ -300,6 +399,7 @@ def init_database():
     
     try:
         create_sqlmodel_tables()          # 1. Crear tablas base
+        migrate_news_fecha_column()       # 1.5. Migrar columna fecha si es necesario
         create_admin_user()               # 2. Crear admin
         create_public_initial_data()      # 3. Crear datos iniciales
         verify_admin_user()               # 4. Verificar admin
