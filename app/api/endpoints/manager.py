@@ -67,6 +67,7 @@ async def update_manager(
     manager_category_id: Optional[int] = Form(None),
     photo: Optional[UploadFile] = Form(None),
     remove_photo: Optional[bool] = Form(False),
+    remove_manager_category: Optional[bool] = Form(False),
     current_user: WepUserModel = Depends(verify_token),
     db: Session = Depends(get_tenant_session)
 ):
@@ -85,7 +86,9 @@ async def update_manager(
             manager.description = description
             
         # Actualizar manager_category_id si se proporciona
-        if manager_category_id is not None:
+        if remove_manager_category:
+            manager.manager_category_id = None
+        elif manager_category_id is not None:
             manager.manager_category_id = manager_category_id    
 
         # Actualizar charge si se proporciona
