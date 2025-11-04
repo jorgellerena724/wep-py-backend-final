@@ -16,6 +16,7 @@ from .endpoints import emails
 from .endpoints import publications
 from .endpoints import publication_category
 from .endpoints import manager_category
+from .endpoints import backup
 
 # Crear el router principal para la API v1
 api_router = APIRouter()
@@ -37,3 +38,4 @@ api_router.include_router(products.router, prefix="/product", tags=["Products"])
 api_router.include_router(publication_category.router, prefix="/publication-category", tags=["Categoria publicaciones"])
 api_router.include_router(publications.router, prefix="/publications", tags=["Publicaciones"])
 api_router.include_router(emails.router, prefix="/emails", tags=["emails"])
+api_router.include_router(backup.router, prefix="", tags=["Backup"])
