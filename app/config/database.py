@@ -5,6 +5,10 @@ from app.config.config import settings
 import logging
 import re
 
+# Importar todos los modelos para que se registren en SQLModel.metadata
+# Esto debe hacerse ANTES de llamar a create_all()
+import app.models  # noqa: F401
+
 # Configuración de logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -235,6 +239,24 @@ def create_admin_user():
 def create_sqlmodel_tables():
     """Crea todas las tablas definidas con SQLModel"""
     try:
+        # Importar todos los modelos EXPLÍCITAMENTE para asegurar que se registren
+        # Importar primero las categorías (tablas referenciadas)
+        from app.models.wep_manager_category_model import WepManagerCategoryModel  # noqa: F401
+        from app.models.wep_category_model import WepCategoryModel  # noqa: F401
+        from app.models.wep_publication_category_model import WepPublicationCategoryModel  # noqa: F401
+        # Luego los modelos que referencian a las categorías
+        from app.models.wep_manager_model import WepManagerModel  # noqa: F401
+        from app.models.wep_product_model import WepProductModel  # noqa: F401
+        from app.models.wep_publication_model import WepPublicationModel  # noqa: F401
+        # Resto de modelos
+        from app.models.wep_header_model import WepHeaderModel  # noqa: F401
+        from app.models.wep_contact_model import WepContactModel  # noqa: F401
+        from app.models.wep_company_model import WepCompanyModel  # noqa: F401
+        from app.models.wep_carrousel_model import WepCarrouselModel  # noqa: F401
+        from app.models.wep_news_model import WepNewsModel  # noqa: F401
+        from app.models.wep_reviews_model import WepReviewsModel  # noqa: F401
+        from app.models.wep_user_model import WepUserModel  # noqa: F401
+        
         # Para PostgreSQL, asegurar que el esquema public existe
         if not is_sqlite:
             with Session(engine) as session:
@@ -243,7 +265,10 @@ def create_sqlmodel_tables():
                 session.commit()
         
         # Crear todas las tablas de SQLModel
+        # Ahora todos los modelos están registrados en SQLModel.metadata
+        logger.info(f"📋 Creando tablas de SQLModel. Total de tablas: {len(SQLModel.metadata.tables)}")
         SQLModel.metadata.create_all(engine)
+        logger.info("✅ Tablas de SQLModel creadas correctamente")
         
         # Crear tabla active_sessions (no es SQLModel)
         create_active_sessions_table()
