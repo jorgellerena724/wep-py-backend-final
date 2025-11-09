@@ -24,11 +24,16 @@ async def create_news(
     FileService.validate_file(photo)
     
     try:
+        # Obtener el máximo valor de order actual
+        max_order_query = select(WepNewsModel.order).order_by(WepNewsModel.order.desc()).limit(1)
+        max_order_result = db.exec(max_order_query).first()
+        next_order = (max_order_result or 0) + 1
+        
         # Guardar imagen (solo nombre)
         photo_filename = await FileService.save_file(photo, current_user.client)
         
-        # Crear registro
-        news = WepNewsModel(title=title, description=description, fecha=fecha, photo=photo_filename)
+        # Crear registro con el siguiente valor de order
+        news = WepNewsModel(title=title, description=description, fecha=fecha, photo=photo_filename, order=next_order)
         db.add(news)
         db.commit()
         db.merge(news)
@@ -51,6 +56,7 @@ async def update_news(
     description: Optional[str] = Form(None),
     fecha: Optional[str] = Form(None),  # Cambiar a str para poder detectar cadena vacía
     status: Optional[bool] = Form(None),
+    order: Optional[int] = Form(None),
     photo: Optional[UploadFile] = File(None),
     current_user: WepUserModel = Depends(verify_token),
     db: Session = Depends(get_tenant_session)
@@ -85,6 +91,9 @@ async def update_news(
         
         if status is not None:
             news.status = status
+        
+        if order is not None:
+            news.order = order
 
         # Procesar imagen si se proporciona
         if photo is not None:
@@ -123,10 +132,10 @@ def get_news( current_user: WepUserModel = Depends(verify_token),db: Session = D
     source = getattr(current_user, 'source', 'unknown')
     
     if source == "website":
-        query = select(WepNewsModel).where(WepNewsModel.status == True).order_by(WepNewsModel.id)
+        query = select(WepNewsModel).where(WepNewsModel.status == True).order_by(WepNewsModel.order, WepNewsModel.id)
     else:
         # Para otros usuarios, no filtrar (devolver todo)
-        query = select(WepNewsModel).order_by(WepNewsModel.id)
+        query = select(WepNewsModel).order_by(WepNewsModel.order, WepNewsModel.id)
     
     news = db.exec(query).all()
     return news

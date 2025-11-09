@@ -12,6 +12,7 @@ class WepNewsModel(SQLModel, table=True):
     fecha: Optional[date] = Field(default=None, nullable=True) 
     photo: str        = Field(max_length=80, nullable=False)
     status: bool      = Field(nullable=False, default=True)
+    order: Optional[int] = Field(default=0, nullable=True)
     
     class Config:
         from_attributes = True
