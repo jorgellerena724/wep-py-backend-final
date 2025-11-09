@@ -115,6 +115,7 @@ async def update_product(
     cal_url: str = Form(""),  # Cambiar a string vacío por defecto
     files: Optional[List[UploadFile]] = File(None),
     file_titles: Optional[str] = Form(None),
+    existing_files: Optional[str] = Form(None),  # Archivos existentes que se mantienen
     variants: Optional[str] = Form(None),
     current_user: WepUserModel = Depends(verify_token),
     db: Session = Depends(get_tenant_session)
@@ -139,39 +140,44 @@ async def update_product(
                 raise HTTPException(400, "Las variantes deben ser una lista")
             product.variants = variants_list
 
-        # Actualizar archivos - NUEVA LÓGICA
-        if file_titles is not None:
+        # Actualizar archivos - NUEVA LÓGICA MEJORADA
+        if existing_files is not None or files is not None:
             try:
-                titles_data = json.loads(file_titles)
-                if not isinstance(titles_data, list):
-                    raise ValueError("file_titles debe ser una lista")
+                new_files_list = []
                 
-                # Crear nueva lista de archivos
-                new_files = []
+                # 1. Procesar archivos existentes que se mantienen
+                if existing_files:
+                    existing_files_data = json.loads(existing_files)
+                    if not isinstance(existing_files_data, list):
+                        raise ValueError("existing_files debe ser una lista")
+                    
+                    for existing_file in existing_files_data:
+                        new_files_list.append({
+                            "title": existing_file.get("title", ""),
+                            "media": existing_file["path"]
+                        })
                 
-                # Procesar archivos existentes con nuevos títulos
-                for i, title in enumerate(titles_data):
-                    # Si hay archivos nuevos, usar esos
-                    if files and i < len(files):
-                        FileService.validate_file(files[i])
-                        filename = await FileService.save_file(files[i], current_user.client)
-                        new_files.append({
-                            "title": title,
+                # 2. Procesar archivos nuevos
+                if files:
+                    if not file_titles:
+                        raise ValueError("file_titles es requerido cuando se envían archivos nuevos")
+                    
+                    titles_data = json.loads(file_titles)
+                    if not isinstance(titles_data, list):
+                        raise ValueError("file_titles debe ser una lista")
+                    if len(titles_data) != len(files):
+                        raise ValueError(f"La cantidad de títulos ({len(titles_data)}) debe coincidir con la cantidad de archivos nuevos ({len(files)})")
+                    
+                    for i, file in enumerate(files):
+                        FileService.validate_file(file)
+                        filename = await FileService.save_file(file, current_user.client)
+                        new_files_list.append({
+                            "title": titles_data[i],
                             "media": filename
                         })
-                    # Si no hay archivos nuevos, mantener los existentes pero actualizar títulos
-                    elif i < len(product.files):
-                        # Mantener el archivo existente pero actualizar el título
-                        new_files.append({
-                            "title": title,
-                            "media": product.files[i]["media"]
-                        })
-                    else:
-                        # Caso donde hay más títulos que archivos existentes
-                        raise ValueError("Cantidad de títulos no coincide con archivos")
                 
-                # Eliminar archivos que ya no están en la nueva lista
-                current_media_files = [f["media"] for f in new_files]
+                # 3. Eliminar archivos que ya no están en la nueva lista
+                current_media_files = [f["media"] for f in new_files_list]
                 for old_file in product.files:
                     if old_file["media"] not in current_media_files:
                         try:
@@ -179,8 +185,11 @@ async def update_product(
                         except:
                             pass
                 
-                product.files = new_files
+                # 4. Actualizar la lista de archivos del producto
+                product.files = new_files_list
                 
+            except json.JSONDecodeError as e:
+                raise HTTPException(status_code=400, detail=f"JSON inválido: {str(e)}")
             except Exception as e:
                 raise HTTPException(status_code=400, detail=str(e))
 
