@@ -5,7 +5,7 @@ class WepHeaderModel(SQLModel, table=True):
     __tablename__ = "header"
 
     id: Optional[int] = Field(default=None, primary_key=True)
-    name: str = Field(max_length=100, nullable=False)
+    name: Optional[str] = Field(max_length=100, nullable=True)
     logo: str = Field(max_length=80, nullable=True)
      
     class Config:

@@ -10,7 +10,7 @@ router = APIRouter()
 
 @router.post("/", response_model=WepHeaderModel)
 async def create_header(
-    name: str = Form(...),
+    name: Optional[str] = Form(None),
     photo: UploadFile = Form(...),
     current_user: WepUserModel = Depends(verify_token),
     db: Session = Depends(get_tenant_session)
