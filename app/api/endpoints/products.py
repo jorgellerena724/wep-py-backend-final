@@ -17,6 +17,7 @@ class ProductRead(SQLModel):
     title: str
     description: str
     category: CategoryRead
+    status: bool
     cal_url: Optional[str]
     variants: List[Dict]
     files: List[Dict]
@@ -112,6 +113,7 @@ async def update_product(
     title: Optional[str] = Form(None, max_length=100),
     description: Optional[str] = Form(None),
     category_id: Optional[int] = Form(None),
+    status: Optional[bool]= Form(None),
     cal_url: str = Form(""),  # Cambiar a string vacío por defecto
     files: Optional[List[UploadFile]] = File(None),
     file_titles: Optional[str] = Form(None),
@@ -128,6 +130,8 @@ async def update_product(
         # Actualizar campos básicos
         if title is not None:
             product.title = title
+        if status is not None:
+            product.status = status
         if description is not None:
             product.description = description
         if category_id is not None:
@@ -209,12 +213,20 @@ def get_products(
     current_user: WepUserModel = Depends(verify_token),
     db: Session = Depends(get_tenant_session)
 ):
-    # Consulta con carga de relación category y ordenamiento por id
-    query = (
-        select(WepProductModel)
+    source = getattr(current_user, 'source', 'unknown')
+    
+    if source == "website":
+        query = (
+        select(WepProductModel).where(WepProductModel.status == True)
         .options(selectinload(WepProductModel.category))
         .order_by(WepProductModel.id)
     )
+    else: 
+        query = (
+            select(WepProductModel)
+            .options(selectinload(WepProductModel.category))
+            .order_by(WepProductModel.id)
+        )
     
     products = db.exec(query).all()
     return [ProductRead.model_validate(p) for p in products]

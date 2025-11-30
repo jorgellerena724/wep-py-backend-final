@@ -177,15 +177,13 @@ async def login(
 
 async def verify_token(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
     
-    logger.info(f"🔍 Verificando token: {token[:50]}...")  # Solo primeros 50 chars por seguridad
-    
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Token inválido o expirado",
         headers={"WWW-Authenticate": "Bearer"},
     )
 
-    # NUEVO: Intentamos decodificar cualquier token JWT primero
+    # Intentamos decodificar cualquier token JWT primero
     try:
         # Decodificar sin verificar expiración para analizar el contenido
         payload = jwt.decode(
@@ -195,19 +193,12 @@ async def verify_token(token: str = Depends(oauth2_scheme), db: Session = Depend
             options={"verify_exp": False}
         )
         
-        logger.info(f"✅ Token JWT decodificado exitosamente")
-        logger.info(f"📄 Payload: {payload}")
-        
         # Obtener el source del payload
         source = payload.get("source", "dashboard")
         email = payload.get("email")
         
-        logger.info(f"🏷️ Source detectado: '{source}'")
-        logger.info(f"📧 Email detectado: '{email}'")
-        
         # CASE 1: Token de WEBSITE (no verificar expiración, crear MockUser)
         if source == "website":
-            logger.info("🌐 TOKEN DE WEBSITE DETECTADO - Creando MockUser")
             
             # Para tokens de website, crear MockUser directamente del payload
             client = payload.get("client", "default")
@@ -227,8 +218,6 @@ async def verify_token(token: str = Depends(oauth2_scheme), db: Session = Depend
         
         # CASE 2: Token de DASHBOARD (verificar expiración y usuario en BD)
         else:
-            logger.info("🏢 TOKEN DE DASHBOARD DETECTADO - Validando usuario real")
-            
             # Para tokens de dashboard, verificar expiración
             try:
                 payload = jwt.decode(

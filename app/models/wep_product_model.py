@@ -21,6 +21,7 @@ class WepProductModel(SQLModel, table=True):
     title: str        = Field(max_length=100, nullable=False)
     description : str = Field(sa_type=Text(), nullable=False)
     category_id: int = Field(foreign_key="category.id", nullable=False)
+    status: bool      = Field(nullable=False, default=True)
     cal_url: str = Field(max_length=255, nullable=True)
     
     variants: List[ProductVariant] = Field(
