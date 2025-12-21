@@ -204,7 +204,8 @@ class FileService:
             url = minio_client.presigned_get_object(
                 bucket_name=settings.MINIO_BUCKET_NAME,
                 object_name=object_name,
-                expires=expires_seconds
+                expires=expires_seconds,
+                secure=False
             )
             
             print(f"[MinIO] URL firmada generada para: {object_name}")
