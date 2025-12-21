@@ -3,13 +3,26 @@ from fastapi import UploadFile, HTTPException, status
 from pathlib import Path
 from minio import Minio
 from minio.error import S3Error
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse, RedirectResponse
 from ..config.config import settings
 import os
 from io import BytesIO
+import mimetypes
 
 class FileService:
     _minio_client = None
+    
+    @classmethod
+    def _get_minio_endpoint_info(cls):
+        """Información del endpoint MinIO (para debugging)"""
+        if not settings.USE_MINIO:
+            return "MinIO deshabilitado"
+        
+        return {
+            "endpoint": settings.MINIO_ENDPOINT,
+            "secure": settings.MINIO_SECURE,
+            "bucket": settings.MINIO_BUCKET_NAME
+        }
     
     @staticmethod
     def get_minio_client():
@@ -18,12 +31,26 @@ class FileService:
             return None
             
         if FileService._minio_client is None:
-            FileService._minio_client = Minio(
-                settings.MINIO_ENDPOINT,
-                access_key=settings.MINIO_ACCESS_KEY,
-                secret_key=settings.MINIO_SECRET_KEY,
-                secure=settings.MINIO_SECURE
-            )
+            try:
+                # Log para debugging
+                print(f"[MinIO] Conectando a: {settings.MINIO_ENDPOINT}, secure={settings.MINIO_SECURE}")
+                
+                FileService._minio_client = Minio(
+                    endpoint=settings.MINIO_ENDPOINT,
+                    access_key=settings.MINIO_ACCESS_KEY,
+                    secret_key=settings.MINIO_SECRET_KEY,
+                    secure=settings.MINIO_SECURE
+                )
+                
+                # Probar conexión inmediatamente
+                FileService._minio_client.list_buckets()
+                print("[MinIO] Conexión exitosa")
+                
+            except Exception as e:
+                print(f"[MinIO] Error de conexión: {e}")
+                FileService._minio_client = None
+                raise
+                
         return FileService._minio_client
     
     @staticmethod
@@ -77,8 +104,10 @@ class FileService:
             if minio_client is None:
                 raise HTTPException(status_code=500, detail="MinIO no configurado")
 
+            # Crear bucket si no existe
             if not minio_client.bucket_exists(settings.MINIO_BUCKET_NAME):
                 minio_client.make_bucket(settings.MINIO_BUCKET_NAME)
+                print(f"[MinIO] Bucket creado: {settings.MINIO_BUCKET_NAME}")
 
             object_name = f"{client_name}/{filename}"
             content = await file.read()
@@ -93,6 +122,7 @@ class FileService:
                 content_type=file.content_type
             )
             
+            print(f"[MinIO] Archivo guardado: {object_name} ({file_size} bytes)")
             return filename
             
         except S3Error as e:
@@ -138,6 +168,7 @@ class FileService:
             if minio_client:
                 object_name = f"{client_name}/{filename}"
                 minio_client.remove_object(settings.MINIO_BUCKET_NAME, object_name)
+                print(f"[MinIO] Archivo eliminado: {object_name}")
         except S3Error:
             pass
 
@@ -166,15 +197,28 @@ class FileService:
                 raise HTTPException(status_code=500, detail="MinIO no configurado")
                 
             object_name = f"{client_name}/{filename}"
-            return minio_client.presigned_get_object(
+            
+            # Verificar que el objeto existe primero
+            minio_client.stat_object(settings.MINIO_BUCKET_NAME, object_name)
+            
+            url = minio_client.presigned_get_object(
                 bucket_name=settings.MINIO_BUCKET_NAME,
                 object_name=object_name,
                 expires=expires_seconds
             )
+            
+            print(f"[MinIO] URL firmada generada para: {object_name}")
+            return url
+            
         except S3Error as e:
+            if e.code == "NoSuchKey":
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Archivo no encontrado en MinIO: {filename}"
+                )
             raise HTTPException(
-                status_code=404,
-                detail=f"Archivo no encontrado en MinIO: {str(e)}"
+                status_code=500,
+                detail=f"Error MinIO al generar URL: {str(e)}"
             )
 
     @staticmethod
@@ -188,12 +232,117 @@ class FileService:
         return str(file_path.absolute())
     
     @staticmethod
-    async def get_media(filename: str, client_name: str):
-        """Devuelve el archivo según el modo configurado"""
+    async def get_file_stream(filename: str, client_name: str) -> StreamingResponse:
+        """Obtiene archivo como stream desde MinIO (proxy interno)"""
+        if not settings.USE_MINIO:
+            raise HTTPException(status_code=400, detail="MinIO no está habilitado")
+        
+        try:
+            minio_client = FileService.get_minio_client()
+            if minio_client is None:
+                raise HTTPException(status_code=500, detail="Cliente MinIO no disponible")
+            
+            object_name = f"{client_name}/{filename}"
+            
+            # Obtener objeto como stream
+            response = minio_client.get_object(
+                bucket_name=settings.MINIO_BUCKET_NAME,
+                object_name=object_name
+            )
+            
+            # Obtener metadata para content-type
+            try:
+                stat = minio_client.stat_object(settings.MINIO_BUCKET_NAME, object_name)
+                content_type = stat.content_type
+            except:
+                # Determinar por extensión si no se puede obtener metadata
+                content_type, _ = mimetypes.guess_type(filename)
+                if not content_type:
+                    content_type = "application/octet-stream"
+            
+            # Determinar disposición del contenido
+            if content_type.startswith("image/") or content_type.startswith("video/"):
+                content_disposition = f'inline; filename="{filename}"'
+            else:
+                content_disposition = f'attachment; filename="{filename}"'
+            
+            print(f"[MinIO] Sirviendo archivo: {object_name} ({content_type})")
+            
+            return StreamingResponse(
+                response,
+                media_type=content_type,
+                headers={
+                    "Content-Disposition": content_disposition,
+                    "Cache-Control": "public, max-age=86400",  # Cache 24h
+                    "Access-Control-Allow-Origin": "*"  # Para CORS si es necesario
+                }
+            )
+            
+        except S3Error as e:
+            if e.code == "NoSuchKey":
+                raise HTTPException(status_code=404, detail=f"Archivo no encontrado: {filename}")
+            raise HTTPException(status_code=500, detail=f"Error MinIO: {str(e)}")
+        finally:
+            # Asegurar que se liberan recursos
+            if 'response' in locals():
+                try:
+                    response.close()
+                    response.release_conn()
+                except:
+                    pass
+    
+    @staticmethod
+    async def get_media(filename: str, client_name: str, serve_directly: bool = True):
+        """
+        Devuelve el archivo según el modo configurado
+        
+        Args:
+            filename: Nombre del archivo
+            client_name: Nombre/Nombre del cliente
+            serve_directly: True para servir directamente (proxy interno)
+                           False para redirigir a URL externa (útil para debugging)
+        """
         if settings.USE_MINIO:
-            url = FileService._get_minio_url(filename, client_name, 3600)
-            from fastapi.responses import RedirectResponse
-            return RedirectResponse(url=url)
+            if serve_directly:
+                # ✅ Modo interno: wep-backend sirve como proxy
+                return await FileService.get_file_stream(filename, client_name)
+            else:
+                # ❌ Modo externo: Redirige a URL firmada (para debugging o casos especiales)
+                url = FileService._get_minio_url(filename, client_name, 3600)
+                return RedirectResponse(url=url)
         else:
+            # Modo local
             file_path = FileService._get_local_url(filename, client_name)
             return FileResponse(file_path)
+
+    @staticmethod
+    def list_client_files(client_name: str, prefix: str = ""):
+        """Lista archivos de un cliente en MinIO"""
+        if not settings.USE_MINIO:
+            return []
+        
+        try:
+            minio_client = FileService.get_minio_client()
+            if minio_client is None:
+                return []
+            
+            objects = minio_client.list_objects(
+                bucket_name=settings.MINIO_BUCKET_NAME,
+                prefix=f"{client_name}/{prefix}",
+                recursive=True
+            )
+            
+            files = []
+            for obj in objects:
+                # Remover el prefijo del cliente
+                filename = obj.object_name.replace(f"{client_name}/", "", 1)
+                files.append({
+                    "name": filename,
+                    "size": obj.size,
+                    "last_modified": obj.last_modified
+                })
+            
+            return files
+            
+        except S3Error:
+            return []
