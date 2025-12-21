@@ -19,15 +19,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Copiar requirements y pip-tools si existen
 COPY requirements.txt requirements-dev.txt* ./
 
-# Instalar dependencias en capa separada para mejor caché
-RUN pip install --no-cache-dir --upgrade pip setuptools wheel && \
+# Instalar dependencias en /opt/venv para acceso global
+RUN python -m venv /opt/venv && \
+    /opt/venv/bin/pip install --no-cache-dir --upgrade pip setuptools wheel && \
     # Instalar solo runtime dependencies
     if [ -f "requirements.txt" ]; then \
-      pip install --no-cache-dir --user -r requirements.txt; \
+      /opt/venv/bin/pip install --no-cache-dir -r requirements.txt; \
     fi && \
     # Instalar dev dependencies solo si existen
     if [ -f "requirements-dev.txt" ]; then \
-      pip install --no-cache-dir --user -r requirements-dev.txt; \
+      /opt/venv/bin/pip install --no-cache-dir -r requirements-dev.txt; \
     fi
 
 # ===== ETAPA 2: Runtime (imagen final liviana) =====
@@ -42,8 +43,8 @@ RUN groupadd -r appuser && \
 
 WORKDIR /app
 
-# Copiar solo las dependencias instaladas desde builder
-COPY --from=builder /root/.local /root/.local
+# Copiar el virtual environment desde builder
+COPY --from=builder /opt/venv /opt/venv
 
 # Dependencias runtime mínimas
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -55,8 +56,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     netcat-openbsd \
     && rm -rf /var/lib/apt/lists/*
 
-# Añadir .local/bin al PATH
-ENV PATH=/root/.local/bin:$PATH \
+# Añadir venv al PATH globalmente
+ENV PATH=/opt/venv/bin:$PATH \
+    VIRTUAL_ENV=/opt/venv \
     PYTHONPATH=/app \
     # FastAPI settings
     APP_MODULE=main:app \
@@ -75,9 +77,11 @@ USER appuser
 # Copiar aplicación
 COPY --chown=appuser:appuser . .
 
-# Verificar estructura
+# Verificar estructura y permisos
 RUN echo "=== Verificando estructura ===" && \
     ls -la && \
+    echo "=== Verificando uvicorn ===" && \
+    which uvicorn && uvicorn --version && \
     echo "=== Requirements instalados ===" && \
     pip list && \
     echo "=== Python path ===" && \
