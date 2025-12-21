@@ -1,15 +1,11 @@
 # .github/workflows/build.yml
-name: Build and Deploy Docker Image
+name: Build Docker Image
 
 on:
   push:
     branches: [ main, develop ]
   pull_request:
     branches: [ main ]
-
-env:
-  REGISTRY: ghcr.io
-  IMAGE_NAME: jorgellerena724/wep-backend  # Nombre específico que quieres
 
 jobs:
   build:
@@ -28,7 +24,7 @@ jobs:
     - name: Log in to GitHub Container Registry
       uses: docker/login-action@v3
       with:
-        registry: ${{ env.REGISTRY }}
+        registry: ghcr.io
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
     
@@ -38,15 +34,15 @@ jobs:
         context: .
         push: ${{ github.event_name != 'pull_request' }}
         tags: |
-          ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
-          ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+          ghcr.io/jorgellerena724/wep-backend:latest
+          ghcr.io/jorgellerena724/wep-backend:${{ github.sha }}
         labels: |
           org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
           org.opencontainers.image.revision=${{ github.sha }}
         cache-from: type=gha
         cache-to: type=gha,mode=max
         platforms: linux/amd64
-        provenance: false
+        provenance: false  # Importante: desactiva para nombres custom
     
     - name: Success message
       if: github.event_name == 'push'
@@ -55,72 +51,27 @@ jobs:
         echo "✅ IMAGEN CONSTRUIDA EXITOSAMENTE"
         echo "========================================"
         echo ""
-        echo "📦 Imagen: ghcr.io/jorgellerena724/wep-backend:latest"
+        echo "📦 Nombre imagen: ghcr.io/jorgellerena724/wep-backend:latest"
         echo "🔗 URL en GHCR: https://github.com/jorgellerena724?tab=packages&repo_name=${{ github.event.repository.name }}"
         echo ""
-        echo "🚀 PARA DESPLEGAR EN VPS:"
+        echo "🚀 PARA DESPLEGAR MANUALMENTE EN VPS:"
         echo "1. Conectar al VPS:"
         echo "   ssh llerena@213.136.83.140 -p 2222"
         echo ""
-        echo "2. Ejecutar deploy:"
+        echo "2. Navegar al directorio:"
         echo "   cd /opt/docker/apps/wep-backend"
+        echo ""
+        echo "3. Opción A - Usar script deploy:"
         echo "   ./deploy.sh"
         echo ""
-        echo "📋 Comando completo:"
+        echo "3. Opción B - Comandos manuales:"
+        echo "   docker compose pull"
+        echo "   docker compose down"
+        echo "   docker compose up -d"
+        echo "   docker compose logs --tail=20"
+        echo ""
+        echo "📋 Comando SSH completo:"
         echo "ssh llerena@213.136.83.140 -p 2222 'cd /opt/docker/apps/wep-backend && ./deploy.sh'"
-
-  deploy-vps:
-    needs: build
-    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop')
-    runs-on: ubuntu-latest
-    
-    steps:
-    - name: Setup SSH key
-      env:
-        SSH_PRIVATE_KEY: ${{ secrets.VPS_SSH_KEY }}
-      run: |
-        mkdir -p ~/.ssh
-        echo "$SSH_PRIVATE_KEY" > ~/.ssh/id_rsa
-        chmod 600 ~/.ssh/id_rsa
-        ssh-keyscan -p 2222 213.136.83.140 >> ~/.ssh/known_hosts
-    
-    - name: Execute deployment on VPS
-      env:
-        IMAGE_TAG: ${{ github.sha }}
-      run: |
-        echo "🚀 Desplegando en VPS..."
-        
-        # Comando SSH para ejecutar el despliegue
-        ssh -o StrictHostKeyChecking=no -p 2222 llerena@213.136.83.140 "
-          set -e
-          echo '📂 Cambiando al directorio del proyecto...'
-          cd /opt/docker/apps/wep-backend
-          
-          echo '🔐 Login en GHCR (si es necesario)...'
-          if [ -f ~/.docker/config.json ]; then
-            echo '✓ Docker ya está autenticado'
-          else
-            echo '⚠️  Necesitas configurar docker login en el VPS:'
-            echo 'docker logout ghcr.io'
-            echo 'echo \"TU_GITHUB_TOKEN\" | docker login ghcr.io -u jorgellerena724 --password-stdin'
-          fi
-          
-          echo '📥 Pulling latest image...'
-          docker compose pull
-          
-          echo '🔄 Reiniciando contenedor...'
-          docker compose up -d --remove-orphans
-          
-          echo '⏳ Esperando que el contenedor esté listo...'
-          sleep 5
-          
-          echo '📊 Estado del contenedor:'
-          docker compose ps
-          
-          echo '📝 Últimos logs:'
-          docker compose logs --tail=10
-          
-          echo '✅ Despliegue completado!'
-        "
-        
-        echo "🎉 Despliegue ejecutado con éxito!"
+        echo ""
+        echo "🔄 O para solo actualizar la imagen:"
+        echo "ssh llerena@213.136.83.140 -p 2222 'cd /opt/docker/apps/wep-backend && docker compose pull && docker compose up -d'"
