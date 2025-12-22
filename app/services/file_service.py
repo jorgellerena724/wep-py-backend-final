@@ -250,31 +250,28 @@ class FileService:
                 object_name=object_name
             )
             
-            # Obtener metadata para content-type
-            try:
-                stat = minio_client.stat_object(settings.MINIO_BUCKET_NAME, object_name)
-                content_type = stat.content_type
-            except:
-                # Determinar por extensión si no se puede obtener metadata
-                content_type, _ = mimetypes.guess_type(filename)
-                if not content_type:
-                    content_type = "application/octet-stream"
+            # Determinar content-type por extensión del archivo
+            content_type, _ = mimetypes.guess_type(filename)
+            if not content_type:
+                content_type = "application/octet-stream"
             
-            # Determinar disposición del contenido
-            if content_type.startswith("image/") or content_type.startswith("video/"):
-                content_disposition = f'inline; filename="{filename}"'
+            # CRÍTICO: Para imágenes y videos usar 'inline' para que se muestren en el navegador
+            if content_type.startswith("image/"):
+                content_disposition = "inline"
+            elif content_type.startswith("video/"):
+                content_disposition = "inline"
             else:
                 content_disposition = f'attachment; filename="{filename}"'
             
-            print(f"[MinIO] Sirviendo archivo: {object_name} ({content_type})")
+            print(f"[MinIO] Sirviendo: {object_name} | Type: {content_type} | Disposition: {content_disposition}")
             
             return StreamingResponse(
                 response,
                 media_type=content_type,
                 headers={
                     "Content-Disposition": content_disposition,
-                    "Cache-Control": "public, max-age=86400",  # Cache 24h
-                    "Access-Control-Allow-Origin": "*"  # Para CORS si es necesario
+                    "Cache-Control": "public, max-age=3600",
+                    "Access-Control-Allow-Origin": "*"
                 }
             )
             
@@ -282,14 +279,8 @@ class FileService:
             if e.code == "NoSuchKey":
                 raise HTTPException(status_code=404, detail=f"Archivo no encontrado: {filename}")
             raise HTTPException(status_code=500, detail=f"Error MinIO: {str(e)}")
-        finally:
-            # Asegurar que se liberan recursos
-            if 'response' in locals():
-                try:
-                    response.close()
-                    response.release_conn()
-                except:
-                    pass
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
     
     @staticmethod
     async def get_media(filename: str, client_name: str, serve_directly: bool = True):

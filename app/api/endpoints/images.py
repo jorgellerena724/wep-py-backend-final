@@ -7,7 +7,7 @@ import mimetypes
 
 router = APIRouter()
 
-@router.get("/{filename}")
+@router.get("/{filename}/")
 async def get_media(
     filename: str, 
     current_user: WepUserModel = Depends(verify_token),

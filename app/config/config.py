@@ -22,7 +22,7 @@ class Settings(BaseSettings):
     MINIO_ENDPOINT: str = Field(..., env="MINIO_ENDPOINT")
     MINIO_ACCESS_KEY: str = Field(..., env="MINIO_ACCESS_KEY")
     MINIO_SECRET_KEY: str = Field(..., env="MINIO_SECRET_KEY")
-    MINIO_SECURE: str = Field(default=True, env="MINIO_SECURE")
+    MINIO_SECURE: bool = Field(default=True, env="MINIO_SECURE")
     MINIO_BUCKET_NAME: str = Field(..., env="MINIO_BUCKET_NAME")
     USE_MINIO: bool = Field(True, env="USE_MINIO")
     USE_SQLITE: bool = Field(False, env="USE_SQLITE")
