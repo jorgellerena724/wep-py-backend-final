@@ -4,7 +4,7 @@ Se ejecuta una vez por cliente al activar el chatbot.
 """
 import logging
 from sqlmodel import Session, text
-from app.models.chatbot_models import ChatbotConfig
+from app.models.wep_chatbot_model import ChatbotConfig
 from app.config.database import engine
 
 logger = logging.getLogger(__name__)

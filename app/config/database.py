@@ -8,6 +8,12 @@ import re
 # Importar todos los modelos para que se registren en SQLModel.metadata
 # Esto debe hacerse ANTES de llamar a create_all()
 import app.models  # noqa: F401
+from app.models.wep_chatbot_model import (
+    ChatbotConfig,
+    ChatSession,
+    ChatMessage,
+    ChatbotUsageStats
+)
 
 # Configuración de logging
 logging.basicConfig(level=logging.INFO)
@@ -256,6 +262,14 @@ def create_sqlmodel_tables():
         from app.models.wep_news_model import WepNewsModel  # noqa: F401
         from app.models.wep_reviews_model import WepReviewsModel  # noqa: F401
         from app.models.wep_user_model import WepUserModel  # noqa: F401
+
+        # MODIFICACIÓN: Importar modelos del chatbot 
+        from app.models.wep_chatbot_model import (
+            ChatbotConfig,
+            ChatSession,
+            ChatMessage,
+            ChatbotUsageStats
+        )
         
         # Para PostgreSQL, asegurar que el esquema public existe
         if not is_sqlite:
@@ -272,9 +286,198 @@ def create_sqlmodel_tables():
         
         # Crear tabla active_sessions (no es SQLModel)
         create_active_sessions_table()
+
+        # MODIFICACIÓN: Crear tablas de chatbot en cada esquema de tenant 
+        create_chatbot_tables_for_all_tenants()
         
     except Exception as e:
         logger.error(f"❌ Error al crear tablas de SQLModel: {e}")
+        raise
+
+def create_chatbot_tables_for_all_tenants():
+    """
+    Crea las tablas del chatbot en todos los esquemas existentes.
+    Esta función se ejecuta automáticamente al inicializar la base de datos.
+    """
+    try:
+        if is_sqlite:
+            logger.info("⏭️ SQLite: No se crean esquemas separados para chatbot")
+            return
+        
+        with Session(engine) as session:
+            # Obtener todos los esquemas de tenants
+            schemas = session.exec(text("""
+                SELECT schema_name 
+                FROM information_schema.schemata 
+                WHERE schema_name NOT IN ('information_schema', 'pg_catalog', 'public')
+                AND schema_name NOT LIKE 'pg_%'
+                ORDER BY schema_name
+            """)).all()
+            
+            logger.info(f"🔧 Creando tablas de chatbot para {len(schemas)} esquemas")
+            
+            for schema_row in schemas:
+                schema_name = schema_row[0]
+                try:
+                    create_chatbot_tables_in_schema(schema_name)
+                except Exception as e:
+                    logger.error(f"❌ Error creando tablas de chatbot en esquema {schema_name}: {e}")
+                    continue
+        
+        logger.info("✅ Tablas de chatbot creadas en todos los esquemas")
+        
+    except Exception as e:
+        logger.error(f"❌ Error general creando tablas de chatbot: {e}")
+
+def create_chatbot_tables_in_schema(schema_name: str):
+    """
+    Crea las tablas del chatbot en un esquema específico.
+    
+    Args:
+        schema_name: Nombre del esquema donde crear las tablas
+    """
+    if not validate_schema_name(schema_name):
+        logger.error(f"❌ Nombre de esquema inválido: {schema_name}")
+        return
+    
+    try:
+        with Session(engine) as session:
+            # Configurar search_path al esquema
+            session.exec(text(f"SET search_path TO {schema_name}, public"))
+            
+            # SQL para crear las tablas del chatbot
+            create_tables_sql = [
+                # Tabla chatbot_config
+                f"""
+                CREATE TABLE IF NOT EXISTS chatbot_config (
+                    id SERIAL PRIMARY KEY,
+                    tenant_id VARCHAR(255) NOT NULL,
+                    groq_model VARCHAR(100) DEFAULT 'llama-3.3-70b-versatile',
+                    system_prompt TEXT DEFAULT 'Eres un asistente virtual útil y amable. Responde en español de manera profesional.',
+                    temperature FLOAT DEFAULT 0.7,
+                    max_tokens INTEGER DEFAULT 500,
+                    max_history INTEGER DEFAULT 10,
+                    session_ttl_minutes INTEGER DEFAULT 30,
+                    enable_history BOOLEAN DEFAULT TRUE,
+                    company_name VARCHAR(255),
+                    company_description TEXT,
+                    contact_info TEXT,
+                    branding TEXT,
+                    welcome_message TEXT,
+                    is_active BOOLEAN DEFAULT TRUE,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+                
+                CREATE INDEX IF NOT EXISTS idx_chatbot_config_tenant 
+                ON chatbot_config(tenant_id);
+                """,
+                
+                # Tabla chat_sessions
+                f"""
+                CREATE TABLE IF NOT EXISTS chat_sessions (
+                    id SERIAL PRIMARY KEY,
+                    session_key VARCHAR(100) UNIQUE NOT NULL,
+                    tenant_id VARCHAR(255) NOT NULL,
+                    user_identifier VARCHAR(255),
+                    user_ip VARCHAR(45),
+                    user_agent TEXT,
+                    page_url TEXT,
+                    message_count INTEGER DEFAULT 0,
+                    is_active BOOLEAN DEFAULT TRUE,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    last_activity TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    expires_at TIMESTAMP NOT NULL,
+                    metadata TEXT
+                );
+                
+                CREATE INDEX IF NOT EXISTS idx_chat_sessions_key 
+                ON chat_sessions(session_key);
+                
+                CREATE INDEX IF NOT EXISTS idx_chat_sessions_tenant 
+                ON chat_sessions(tenant_id);
+                
+                CREATE INDEX IF NOT EXISTS idx_chat_sessions_expires 
+                ON chat_sessions(expires_at) WHERE is_active = TRUE;
+                """,
+                
+                # Tabla chat_messages
+                f"""
+                CREATE TABLE IF NOT EXISTS chat_messages (
+                    id SERIAL PRIMARY KEY,
+                    session_key VARCHAR(100) NOT NULL,
+                    role VARCHAR(20) NOT NULL,
+                    content TEXT NOT NULL,
+                    tokens INTEGER,
+                    model_used VARCHAR(100),
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    message_order INTEGER DEFAULT 0,
+                    FOREIGN KEY (session_key) 
+                    REFERENCES chat_sessions(session_key) 
+                    ON DELETE CASCADE
+                );
+                
+                CREATE INDEX IF NOT EXISTS idx_chat_messages_session 
+                ON chat_messages(session_key);
+                
+                CREATE INDEX IF NOT EXISTS idx_chat_messages_created 
+                ON chat_messages(created_at);
+                """,
+                
+                # Tabla chatbot_usage_stats (opcional)
+                f"""
+                CREATE TABLE IF NOT EXISTS chatbot_usage_stats (
+                    id SERIAL PRIMARY KEY,
+                    tenant_id VARCHAR(255) NOT NULL,
+                    date VARCHAR(10) NOT NULL,
+                    total_sessions INTEGER DEFAULT 0,
+                    active_sessions INTEGER DEFAULT 0,
+                    total_messages INTEGER DEFAULT 0,
+                    total_tokens INTEGER DEFAULT 0,
+                    estimated_cost FLOAT DEFAULT 0.0,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(tenant_id, date)
+                );
+                
+                CREATE INDEX IF NOT EXISTS idx_usage_stats_tenant_date 
+                ON chatbot_usage_stats(tenant_id, date);
+                """
+            ]
+            
+            # Ejecutar cada sentencia SQL
+            for sql in create_tables_sql:
+                try:
+                    session.exec(text(sql))
+                except Exception as sql_error:
+                    logger.warning(f"⚠️ Error ejecutando SQL en esquema {schema_name}: {sql_error}")
+            
+            session.commit()
+            
+            # Verificar si ya existe configuración para este tenant
+            config_exists = session.exec(
+                text("SELECT 1 FROM chatbot_config WHERE tenant_id = :tenant_id")
+                .bindparams(tenant_id=schema_name)
+            ).first()
+            
+            if not config_exists:
+                # Insertar configuración por defecto
+                session.exec(
+                    text("""
+                        INSERT INTO chatbot_config (tenant_id, company_name, welcome_message)
+                        VALUES (:tenant_id, :company_name, :welcome_message)
+                    """).bindparams(
+                        tenant_id=schema_name,
+                        company_name=schema_name.replace('_', ' ').title(),
+                        welcome_message=f"¡Hola! Soy el asistente virtual de {schema_name.replace('_', ' ').title()}. ¿En qué puedo ayudarte?"
+                    )
+                )
+                session.commit()
+                logger.info(f"  ✅ Configuración por defecto creada para tenant: {schema_name}")
+            
+            logger.info(f"  ✅ Tablas de chatbot creadas en esquema: {schema_name}")
+            
+    except Exception as e:
+        logger.error(f"❌ Error creando tablas de chatbot en esquema {schema_name}: {e}")
         raise
 
 def create_public_initial_data():
@@ -632,7 +835,7 @@ def get_all_tables_except_user():
                     SELECT name 
                     FROM sqlite_master 
                     WHERE type = 'table'
-                    AND name NOT IN ('user2', 'active_sessions', 'google_calendar_tokens')
+                    AND name NOT IN ('user2', 'active_sessions', 'google_calendar_tokens,'chatbot_config', 'chat_sessions', 'chat_messages', 'chatbot_usage_stats')
                     ORDER BY name
                 """))
                 tables = [row[0] for row in result.fetchall()]
@@ -642,7 +845,7 @@ def get_all_tables_except_user():
                     FROM information_schema.tables 
                     WHERE table_schema = 'public' 
                     AND table_type = 'BASE TABLE'
-                    AND table_name NOT IN ('user2', 'active_sessions', 'google_calendar_tokens')
+                    AND table_name NOT IN ('user2', 'active_sessions', 'google_calendar_tokens','chatbot_config', 'chat_sessions', 'chat_messages', 'chatbot_usage_stats')
                     ORDER BY table_name
                 """))
                 tables = [row[0] for row in result.fetchall()]
@@ -702,6 +905,9 @@ def create_tenant_schema(client_name: str):
                     continue
             
             session.commit()
+
+            # MODIFICACIÓN: Crear tablas del chatbot 
+            create_chatbot_tables_in_schema(client_name)
             
             # 4. Crear datos iniciales solo para las tablas específicas
             create_tenant_initial_data(client_name)
@@ -980,6 +1186,21 @@ def migrate_existing_tenant_schema(client_name: str):
             missing_tables = [table for table in public_tables if table not in existing_tables]
             
             if not missing_tables:
+                # MODIFICACIÓN: Verificar si las tablas del chatbot existen (AGREGAR ESTO)
+                chatbot_tables = ['chatbot_config', 'chat_sessions', 'chat_messages', 'chatbot_usage_stats']
+                existing_chatbot_tables = session.exec(text("""
+                    SELECT table_name 
+                    FROM information_schema.tables 
+                    WHERE table_schema = :schema_name 
+                    AND table_name IN ('chatbot_config', 'chat_sessions', 'chat_messages', 'chatbot_usage_stats')
+                """).bindparams(schema_name=client_name))
+                
+                existing_chatbot = [row[0] for row in existing_chatbot_tables.fetchall()]
+                
+                if len(existing_chatbot) < 4:  # Si faltan tablas del chatbot
+                    logger.info(f"🔧 Creando tablas faltantes del chatbot para tenant '{client_name}'")
+                    create_chatbot_tables_in_schema(client_name)
+                
                 # Aún así, verificar que tienen datos iniciales
                 create_tenant_initial_data(client_name)
                 return
@@ -996,6 +1217,9 @@ def migrate_existing_tenant_schema(client_name: str):
                     continue
             
             session.commit()
+
+            # MODIFICACIÓN: Crear tablas del chatbot si no existen 
+            create_chatbot_tables_in_schema(client_name)
             
             # Copiar datos iniciales para las nuevas tablas
             create_tenant_initial_data(client_name)

@@ -6,14 +6,14 @@ from fastapi.responses import JSONResponse
 from sqlmodel import Session
 
 # Importaciones internas
-from app.models.chatbot_models import (
+from app.models.wep_chatbot_model import (
     ChatRequest,
     ChatResponse,
     SessionInfo,
     ChatbotConfigUpdate
 )
 from app.services.chatbot import ChatbotService, get_chatbot_service, ChatbotServiceError
-from app.dependencies import verify_token, get_tenant_session  # Tus dependencias existentes
+from app.api.endpoints.token import verify_token, get_tenant_session  # dependencias existentes
 from app.config.chatbot_config import chatbot_settings
 
 # Configurar logging

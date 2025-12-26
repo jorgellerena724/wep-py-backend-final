@@ -6,7 +6,7 @@ from typing import Dict, List, Optional, Tuple, Any
 from sqlmodel import Session, select, text
 from groq import Groq, BadRequestError, APIError
 
-from app.models.chatbot_models import (
+from app.models.wep_chatbot_model import (
     ChatbotConfig, 
     ChatSession, 
     ChatMessage,
