@@ -204,7 +204,7 @@ async def update_product(
     except Exception as e:
         db.rollback()
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            status_code=500,
             detail=f"Error al actualizar el producto: {str(e)}"
         )
 
