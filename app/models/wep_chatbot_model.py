@@ -94,7 +94,7 @@ class ChatSession(SQLModel, table=True):
     )
     
     # Datos adicionales (opcional)
-    metadata: Optional[str] = Field(default=None, description="Metadatos adicionales en JSON")
+    meta_data: Optional[str] = Field(default=None, description="Metadatos adicionales en JSON")
 
 
 class ChatMessage(SQLModel, table=True):
