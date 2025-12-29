@@ -1,104 +1,100 @@
-# ===== ETAPA 1: Builder (instalación dependencias) =====
+# ===== ETAPA 1: Builder =====
 FROM python:3.11-slim AS builder
 
-# Variables de entorno para pip
 ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1 \
-    PIP_NO_CACHE_DIR=1 \
-    PIP_DISABLE_PIP_VERSION_CHECK=1
+    PYTHONUNBUFFERED=1
 
 WORKDIR /app
 
-# Instalar dependencias del sistema solo para compilación
+# Instalar compiladores para dependencias Python
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     g++ \
     libpq-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Copiar requirements y pip-tools si existen
-COPY requirements.txt requirements-dev.txt* ./
+# Copiar requirements
+COPY requirements.txt ./
 
-# Instalar dependencias en /opt/venv para acceso global
+# Instalar dependencias en venv
 RUN python -m venv /opt/venv && \
-    /opt/venv/bin/pip install --no-cache-dir --upgrade pip setuptools wheel && \
-    # Instalar solo runtime dependencies
-    if [ -f "requirements.txt" ]; then \
-      /opt/venv/bin/pip install --no-cache-dir -r requirements.txt; \
-    fi && \
-    # Instalar dev dependencies solo si existen
-    if [ -f "requirements-dev.txt" ]; then \
-      /opt/venv/bin/pip install --no-cache-dir -r requirements-dev.txt; \
-    fi
+    /opt/venv/bin/pip install --no-cache-dir --upgrade pip && \
+    /opt/venv/bin/pip install --no-cache-dir -r requirements.txt
 
-# ===== ETAPA 2: Runtime (imagen final liviana) =====
+# ===== ETAPA 2: Runtime =====
 FROM python:3.11-slim AS runtime
 
-# Usuario no-root para seguridad
+# Crear usuario y directorios con permisos CORREGIDOS
 RUN groupadd -r appuser && \
-    useradd --no-log-init -r -g appuser appuser && \
-    # Crear directorios necesarios
-    mkdir -p /app/uploads /home/appuser && \
-    chown -R appuser:appuser /app /home/appuser
+    useradd -r -g appuser -s /bin/bash -m appuser && \
+    mkdir -p /app/uploads && \
+    mkdir -p /home/appuser && \
+    chown -R appuser:appuser /app && \
+    chown -R appuser:appuser /home/appuser && \
+    chmod 755 /app && \
+    chmod 755 /home/appuser
 
 WORKDIR /app
 
-# Copiar el virtual environment desde builder
+# Copiar virtual environment
 COPY --from=builder /opt/venv /opt/venv
 
-# Dependencias runtime mínimas
+# Instalar FFmpeg y dependencias runtime
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    # Para psycopg2
+    ffmpeg \
     libpq-dev \
-    # Para debugging
     curl \
-    # Para healthcheck
-    netcat-openbsd \
+    # Para bibliotecas de imágenes
+    libjpeg-dev \
+    libpng-dev \
+    libwebp-dev \
+    libheif-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Añadir venv al PATH globalmente
-ENV PATH=/opt/venv/bin:$PATH \
-    VIRTUAL_ENV=/opt/venv \
-    PYTHONPATH=/app \
-    # FastAPI settings
-    APP_MODULE=main:app \
-    APP_HOST=0.0.0.0 \
-    APP_PORT=8000 \
-    # Python optimizations
-    PYTHONUNBUFFERED=1 \
-    PYTHONDONTWRITEBYTECODE=1 \
-    # Para uvicorn workers
-    WEB_CONCURRENCY=2 \
-    MAX_WORKERS=4
+# Configurar entorno
+ENV PATH="/opt/venv/bin:$PATH" \
+    PYTHONPATH="/app" \
+    APP_MODULE="main:app" \
+    APP_HOST="0.0.0.0" \
+    APP_PORT="8000" \
+    # Variable importante para el servicio de archivos
+    UPLOADS="/app/uploads"
 
-# Cambiar a usuario no-root
+# Cambiar a usuario no-root ANTES de copiar archivos
 USER appuser
 
-# Copiar aplicación
+# Copiar aplicación manteniendo ownership del usuario
 COPY --chown=appuser:appuser . .
 
-# Verificar estructura y permisos
-RUN echo "=== Verificando estructura ===" && \
-    ls -la && \
-    echo "=== Verificando uvicorn ===" && \
-    which uvicorn && uvicorn --version && \
-    echo "=== Requirements instalados ===" && \
-    pip list && \
-    echo "=== Python path ===" && \
-    python -c "import sys; print(sys.path)"
+# VERIFICACIÓN DE PERMISOS (añadida)
+RUN echo "=== Verificando permisos ===" && \
+    echo "Usuario actual: $(whoami)" && \
+    echo "UID: $(id -u)" && \
+    echo "GID: $(id -g)" && \
+    echo "" && \
+    echo "Permisos de /app:" && \
+    ls -la /app && \
+    echo "" && \
+    echo "Permisos de /app/uploads:" && \
+    ls -la /app/uploads && \
+    echo "" && \
+    echo "¿Puedo escribir en /app/uploads?:" && \
+    touch /app/uploads/test_permission.txt && \
+    if [ $? -eq 0 ]; then \
+        echo "✅ SI puedo escribir en /app/uploads" && \
+        rm /app/uploads/test_permission.txt; \
+    else \
+        echo "❌ NO puedo escribir en /app/uploads"; \
+    fi && \
+    echo "" && \
+    echo "Espacio disponible:" && \
+    df -h /app
 
-# Healthcheck mejorado
+# Healthcheck
 HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
     CMD curl -f http://localhost:${APP_PORT}/health || exit 1
 
 EXPOSE 8000
 
-# Comando de ejecución con opciones optimizadas
-CMD ["sh", "-c", \
-     "uvicorn ${APP_MODULE} \
-     --host ${APP_HOST} \
-     --port ${APP_PORT} \
-     --workers ${WEB_CONCURRENCY} \
-     --limit-concurrency ${MAX_WORKERS} \
-     --timeout-keep-alive 30 \
-     --no-access-log"]
+# Comando de ejecución
+CMD ["sh", "-c", "uvicorn ${APP_MODULE} --host ${APP_HOST} --port ${APP_PORT}"]
