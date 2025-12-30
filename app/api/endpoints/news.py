@@ -48,7 +48,6 @@ async def create_news(
             detail=f"Error creando news: {str(e)}"
         )
 
-
 @router.patch("/{news_id}", response_model=WepNewsModel)
 async def update_news(
     news_id: int,

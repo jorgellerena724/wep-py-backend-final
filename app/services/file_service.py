@@ -32,23 +32,25 @@ class FileOptimizer:
         ]
         optimizable_video_types = [
             "video/mp4", "video/avi", "video/mov", "video/wmv", "video/flv", 
-            "video/quicktime", "video/x-msvideo", "video/x-matroska"
+            "video/quicktime", "video/x-msvideo", "video/x-matroska", "video/3gpp",
+            "video/x-ms-wmv", "video/x-flv", "video/webm"
         ]
         
         # Verificar por extensión también
         file_ext = Path(filename).suffix.lower()
         
-        # No optimizar si ya está en formato óptimo
+        # No optimizar si ya está en formato óptimo para IMÁGENES
         if (content_type == "image/webp" or file_ext == '.webp' or
             file_ext == '.avif'):
             return False
         
-        if content_type == "video/mp4" and file_ext == '.mp4':
-            # Verificar si ya tiene codec H.264 (necesitarías análisis más profundo)
-            return False
-        
         # Incluir por extensión si el content_type no es reconocido
         if file_ext in ['.avif', '.heif', '.heic', '.jpeg', '.jpg', '.png', '.gif', '.bmp', '.tiff', '.tif']:
+            return True
+        
+        # Para video, también verificar por extensión común
+        video_extensions = ['.mov', '.avi', '.wmv', '.flv', '.mkv', '.webm', '.mp4', '.m4v', '.3gp', '.mpeg', '.mpg']
+        if file_ext in video_extensions:
             return True
         
         return content_type in optimizable_image_types + optimizable_video_types
@@ -58,7 +60,7 @@ class FileOptimizer:
         file_content: bytes,
         original_filename: str,
         max_width: int = 1920,
-        quality: int = 85
+        quality: int = 75
     ) -> Tuple[bytes, str, str]:
         """
         Optimiza imagen para web con soporte para HEIF/AVIF
@@ -97,9 +99,6 @@ class FileOptimizer:
                 image = image.resize((max_width, new_height), Image.Resampling.LANCZOS)
                 logger.info(f"Imagen redimensionada: {original_size} -> {image.size}")
             
-            # Determinar formato óptimo basado en la entrada
-            original_ext = Path(original_filename).suffix.lower()
-            
             # Siempre convertir a WebP para mejor compresión web (excepto PNG con transparencia)
             output_buffer = BytesIO()
             image.save(output_buffer, format='WEBP', quality=quality, method=6)
@@ -120,7 +119,7 @@ class FileOptimizer:
         file_content: bytes,
         original_filename: str,
         max_width: int = 1280,
-        crf: int = 23
+        crf: int = 24
     ) -> Tuple[bytes, str, str]:
         """
         Optimiza video para web usando FFmpeg
@@ -148,7 +147,7 @@ class FileOptimizer:
                 'ffmpeg',
                 '-i', input_path,  # Archivo de entrada
                 '-c:v', 'libx264',  # Codec de video H.264
-                '-preset', 'medium',  # Balance entre velocidad y compresión
+                '-preset', 'slow',  # Balance entre velocidad y compresión
                 '-crf', str(crf),  # Calidad (18-28, menor = mejor calidad)
                 '-vf', f'scale=min({max_width}\,iw):-2',  # Redimensionar manteniendo ratio
                 '-c:a', 'aac',  # Audio codec
@@ -263,8 +262,7 @@ class FileService:
         file: UploadFile, 
         client_name: str, 
         optimize: bool = True,
-        keep_original: bool = False
-    ) -> Dict:
+    ) -> str:
         """
         Guarda archivo con opción de optimización
         
@@ -272,17 +270,10 @@ class FileService:
             file: Archivo a guardar
             client_name: Nombre del cliente
             optimize: Si True, optimiza imágenes/videos
-            keep_original: Si True, guarda también el original
         
         Returns:
-            Dict con:
+            str con:
             - filename: Nombre COMPLETO del archivo guardado (para BD y frontend)
-            - original_name: Nombre original del archivo
-            - optimized: Si fue optimizado
-            - content_type: Content-type final
-            - format: Extensión sin punto (ej: 'webp', 'mp4')
-            - size: Tamaño en bytes
-            - original_filename: (opcional) Nombre del original si keep_original=True
         """
         FileService.validate_file(file)
         
@@ -308,40 +299,7 @@ class FileService:
                 optimized_content_type
             )
             
-            # Preparar resultado
-            result = {
-                "filename": saved_filename,  # Nombre COMPLETO con extensión
-                "original_name": file.filename,
-                "optimized": True,
-                "content_type": optimized_content_type,
-                "format": Path(saved_filename).suffix.lower().replace('.', ''),
-                "size": len(optimized_content),
-                "message": f"Archivo optimizado a {Path(saved_filename).suffix.upper()}"
-            }
-            
-            # Guardar original si se solicita
-            if keep_original:
-                # Necesitamos leer el archivo nuevamente
-                await file.seek(0)  # Volver al inicio del archivo
-                original_content = await file.read()
-                original_file_ext = Path(file.filename).suffix.lower()
-                original_uuid_name = f"orig_{uuid.uuid4()}{original_file_ext}"
-                
-                await FileService._save_local_bytes(
-                    original_content,
-                    original_uuid_name,
-                    client_name,
-                    file.content_type
-                )
-                result["original_filename"] = original_uuid_name
-                result["original_size"] = len(original_content)
-                if len(original_content) > 0:
-                    savings = (1 - len(optimized_content) / len(original_content)) * 100
-                    result["savings_percent"] = round(savings, 2)
-                else:
-                    result["savings_percent"] = 0
-            
-            return result
+            return saved_filename
         else:
             # Guardar sin optimizar
             logger.info(f"Guardando sin optimizar: {file.filename}")
@@ -357,15 +315,7 @@ class FileService:
                 file.content_type
             )
             
-            return {
-                "filename": saved_filename,  # Nombre COMPLETO con extensión
-                "original_name": file.filename,
-                "optimized": False,
-                "content_type": file.content_type,
-                "format": Path(saved_filename).suffix.lower().replace('.', ''),
-                "size": len(content),
-                "message": "Archivo guardado sin optimización"
-            }
+            return saved_filename
     
     @staticmethod
     async def _save_local_bytes(
