@@ -147,7 +147,7 @@ class FileOptimizer:
                 'ffmpeg',
                 '-i', input_path,  # Archivo de entrada
                 '-c:v', 'libx264',  # Codec de video H.264
-                '-preset', 'slow',  # Balance entre velocidad y compresión
+                '-preset', 'medium',  # Balance entre velocidad y compresión
                 '-crf', str(crf),  # Calidad (18-28, menor = mejor calidad)
                 '-vf', f'scale=min({max_width}\,iw):-2',  # Redimensionar manteniendo ratio
                 '-c:a', 'aac',  # Audio codec
