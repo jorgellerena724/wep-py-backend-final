@@ -1,43 +1,75 @@
-# .dockerignore
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
-.Python
-env/
-venv/
-.venv/
-.env
-*.env.local
-
-# Testing
-.coverage
-htmlcov/
-.pytest_cache/
-.mypy_cache/
-
-# IDEs
-.vscode/
-.idea/
-*.swp
-*.swo
-
-# OS
-.DS_Store
-Thumbs.db
+# Docker
+Dockerfile
+docker-compose.yml
+.dockerignore
 
 # Git
 .git/
 .gitignore
 
-# Docker
-docker-compose.yml
-.dockerignore
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Tests y coverage
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
 
 # Logs
 *.log
 logs/
 
-# Temporary
-tmp/
+# OS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Documentación y build
+docs/_build/
+build/
+dist/
+*.egg-info/
+.eggs/
+sdist/
+wheels/
+
+# Archivos temporales
 temp/
+tmp/
+uploads/  # No incluir archivos subidos en build
+
+# Archivos grandes y específicos
+*.db
+*.sqlite3
+*.jpg
+*.jpeg
+*.png
+*.gif
+*.mp4
+*.webm
