@@ -10,6 +10,11 @@ from app.config.config import settings
 router = APIRouter()
 bcrypt_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
+class UserResponse(SQLModel):
+    id: int
+    email: str
+    full_name: str
+    client: str
 
 # Modelo para actualización (PATCH)
 class UserUpdateRequest(SQLModel):

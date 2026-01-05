@@ -71,7 +71,7 @@ async def create_publication(
             detail=f"Error creando publication: {str(e)}"
         )
 
-@router.patch("/{publication_id}", response_model=WepPublicationModel)
+@router.patch("/{publication_id}/", response_model=WepPublicationModel)
 async def update_publication(
     publication_id: int,
     title: Optional[str] = Form(None, max_length=100),
@@ -157,7 +157,7 @@ def get_publication(publication_id: int,
         raise HTTPException(status_code=404, detail="Carrousel no encontrado")
     return publication
 
-@router.delete("/{publication_id}", status_code=204)
+@router.delete("/{publication_id}/", status_code=204)
 def delete_publication(publication_id: int, current_user: WepUserModel = Depends(verify_token),
      db: Session = Depends(get_tenant_session)):
     

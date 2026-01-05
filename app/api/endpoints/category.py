@@ -14,12 +14,17 @@ async def create_category(
     db: Session = Depends(get_tenant_session)
 ):  
     try:
-        # Crear registro
-        category = WepCategoryModel(title=title)
-        db.add(category)
-        db.commit()
-        db.merge(category)
-        return category
+        existing = db.exec(select(WepCategoryModel).where(WepCategoryModel.title == title)).first()
+        
+        if existing:
+            raise HTTPException(status_code=400, detail="Ya existe una categoría con ese nombre.")
+        else:                                   
+            # Crear registro
+            category = WepCategoryModel(title=title)
+            db.add(category)
+            db.commit()
+            db.merge(category)
+            return category
         
     except HTTPException:
         raise
@@ -41,17 +46,19 @@ async def update_category(
         # Obtener el header existente
         category = db.get(WepCategoryModel, category_id)
         if not category:
-            raise HTTPException(status_code=404, detail="category no encontrado")
-
-        # Actualizar nombre si se proporciona
-        if title is not None:
-            category.title = title
-
-        # Confirmar cambios en la base de datos
-        db.commit()
-        db.merge(category)
+            raise HTTPException(status_code=404, detail="Categoría no encontrada.")
         
-        return category
+        if title is not None:
+            existing = db.exec(select(WepCategoryModel).where(WepCategoryModel.title == title)).first()
+            
+            if existing:
+                raise HTTPException(status_code=400, detail="Ya existe una categoría con ese nombre.")
+            else:    
+                category.title = title
+
+                db.commit()
+                db.merge(category)
+                return category
 
     except HTTPException:
         # Re-lanzar excepciones HTTP que ya estamos manejando

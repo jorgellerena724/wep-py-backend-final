@@ -1,73 +1,80 @@
-from sqlmodel import SQLModel, Field
-from datetime import datetime
-from typing import Optional, Dict, Any
-import json
+from sqlmodel import Column, Relationship, SQLModel, Field, Text
+from datetime import datetime, timezone
+from typing import TYPE_CHECKING, Optional, Dict, Any
+from app.config.config import settings
+
+if TYPE_CHECKING:
+    from app.models.wep_user_model import WepUserModel
+    
+class ChatbotModel(SQLModel, table=True):
+    """
+    Modelos de IA disponibles para los chatbots.
+    Gestiona los modelos de Groq desde la base de datos.
+    """
+    __tablename__ = "chatbot_model"
+    __table_args__ = {"schema": "public"}
+    
+    id: Optional[int] = Field(default=None, primary_key=True)
+    name: str = Field(unique=True, index=True)
+    provider: str = Field(nullable=False)
+    status: bool = Field(default=True)
+    
+    # Relación inversa
+    configs: list["ChatbotConfig"] = Relationship(back_populates="model")
 
 class ChatbotConfig(SQLModel, table=True):
     """
-    Configuración del chatbot para cada cliente/tenant.
-    Esta tabla se creará en el esquema de cada cliente.
+    Configuración del chatbot por usuario.
+    Desde el dashboard asignas qué config usar cada user_id.
     """
-    __tablename__ = "chatbot_config"
+    if settings.USE_SQLITE:
+        __tablename__ = "chatbot_config"
+    else:
+        __tablename__ = "chatbot_config"
+        __table_args__ = {"schema": "public"}
     
     id: Optional[int] = Field(default=None, primary_key=True)
-    tenant_id: str = Field(index=True, description="ID del cliente/tenant")
+    user_id: int = Field(foreign_key="public.user2.id", nullable=False, unique=True)
     
     # Configuración de Groq
-    groq_model: str = Field(default="llama-3.3-70b-versatile", description="Modelo de Groq a usar")
-    system_prompt: str = Field(
-        default="Eres un asistente virtual útil y amable. Responde en español de manera profesional.",
-        description="Prompt del sistema personalizado para el cliente"
+    api_key: str = Field()
+    model_id: int = Field(
+        foreign_key="public.chatbot_model.id",
+    )
+    prompt: str = Field(
+        sa_column=Column(Text), 
+    )
+    temperature: float = Field(
+        default=0.2,
+        ge=0.0,
+        le=2.0,
     )
     
-    # Parámetros de generación
-    temperature: float = Field(default=0.7, ge=0.0, le=2.0, description="Creatividad de las respuestas (0-2)")
-    max_tokens: int = Field(default=500, description="Máximo de tokens por respuesta")
-    max_history: int = Field(default=10, description="Máximo de mensajes en historial")
+    status: bool = Field(default=True)
+    created_at: datetime = Field()
+    updated_at: datetime = Field()
     
-    # Configuración de sesiones
-    session_ttl_minutes: int = Field(default=30, description="Tiempo de expiración de sesiones en minutos")
-    enable_history: bool = Field(default=True, description="Guardar historial de conversaciones")
+    # Relación con usuario
+    user: Optional["WepUserModel"] = Relationship(
+        back_populates="chatbot",
+        sa_relationship_kwargs={"lazy": "joined"}
+    )
     
-    # Información del negocio
-    company_name: Optional[str] = Field(default=None, description="Nombre de la empresa")
-    company_description: Optional[str] = Field(default=None, description="Descripción del negocio")
-    contact_info: Optional[str] = Field(default=None, description="Información de contacto (JSON)")
-    
-    # Configuración adicional
-    branding: Optional[str] = Field(default=None, description="Configuración de marca (JSON)")
-    welcome_message: Optional[str] = Field(default=None, description="Mensaje de bienvenida personalizado")
-    
-    # Metadatos
-    is_active: bool = Field(default=True, description="Chatbot activo/inactivo")
-    created_at: datetime = Field(default_factory=datetime.now)
-    updated_at: datetime = Field(default_factory=datetime.now)
-
-    def get_contact_info_dict(self) -> Dict[str, Any]:
-        """Devuelve la información de contacto como diccionario"""
-        if self.contact_info:
-            try:
-                return json.loads(self.contact_info)
-            except:
-                return {}
-        return {}
-    
-    def get_branding_dict(self) -> Dict[str, Any]:
-        """Devuelve la configuración de marca como diccionario"""
-        if self.branding:
-            try:
-                return json.loads(self.branding)
-            except:
-                return {}
-        return {}
-
+    model: Optional["ChatbotModel"] = Relationship(
+        back_populates="configs",
+        sa_relationship_kwargs={"lazy": "joined"}
+    )
 
 class ChatSession(SQLModel, table=True):
     """
     Sesión de chat para cada usuario final.
     Se crea una por cada usuario que interactúa con el chatbot.
     """
-    __tablename__ = "chat_sessions"
+    if settings.USE_SQLITE:
+        __tablename__ = "chat_sessions"
+    else:
+        __tablename__ = "chat_sessions"
+        __table_args__ = {"schema": "public"}
     
     id: Optional[int] = Field(default=None, primary_key=True)
     
@@ -102,13 +109,17 @@ class ChatMessage(SQLModel, table=True):
     Mensaje individual de una conversación.
     Se relaciona con una sesión específica.
     """
-    __tablename__ = "chat_messages"
+    if settings.USE_SQLITE:
+        __tablename__ = "chat_messages"
+    else:
+        __tablename__ = "chat_messages"
+        __table_args__ = {"schema": "public"}
     
     id: Optional[int] = Field(default=None, primary_key=True)
     
     # Relación con la sesión
     session_key: str = Field(
-        foreign_key="chat_sessions.session_key",
+        foreign_key="public.chat_sessions.session_key",
         index=True,
         description="Clave de la sesión a la que pertenece"
     )
@@ -133,7 +144,11 @@ class ChatbotUsageStats(SQLModel, table=True):
     Estadísticas de uso del chatbot por cliente.
     Opcional: para monitoreo y facturación.
     """
-    __tablename__ = "chatbot_usage_stats"
+    if settings.USE_SQLITE:
+        __tablename__ = "chatbot_usage_stats"
+    else:
+        __tablename__ = "chatbot_usage_stats"
+        __table_args__ = {"schema": "public"}
     
     id: Optional[int] = Field(default=None, primary_key=True)
     
@@ -183,18 +198,3 @@ class SessionInfo(BaseModel):
     expires_at: datetime
     message_count: int
     is_active: bool
-
-class ChatbotConfigUpdate(BaseModel):
-    """Modelo para actualizar configuración"""
-    groq_model: Opt[str] = None
-    system_prompt: Opt[str] = None
-    temperature: Opt[float] = None
-    max_tokens: Opt[int] = None
-    max_history: Opt[int] = None
-    session_ttl_minutes: Opt[int] = None
-    company_name: Opt[str] = None
-    company_description: Opt[str] = None
-    contact_info: Opt[Dict[str, Any]] = None
-    branding: Opt[Dict[str, Any]] = None
-    welcome_message: Opt[str] = None
-    is_active: Opt[bool] = None

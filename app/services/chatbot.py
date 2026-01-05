@@ -13,7 +13,6 @@ from app.models.wep_chatbot_model import (
     ChatbotUsageStats
 )
 from app.config.config import settings
-from app.config.chatbot_config import chatbot_settings
 
 logger = logging.getLogger(__name__)
 
@@ -36,17 +35,23 @@ class ChatbotService:
     """
     
     def __init__(self, db_session: Session):
+        logger.info(f"🚀 DEBUG: Inicializando ChatbotService para sesión: {id(db_session)}")
         self.db = db_session
         self.groq_client = None
-        self._initialize_groq_client()
+        try:
+            self._initialize_groq_client()
+            logger.info("✅ DEBUG: ChatbotService inicializado exitosamente")
+        except Exception as e:
+            logger.error(f"❌ DEBUG: Error en inicialización del servicio: {str(e)}")
+            raise
         
     def _initialize_groq_client(self):
         """Inicializa el cliente de Groq con la API key"""
         try:
-            if not chatbot_settings.GROQ_API_KEY:
+            if not settings.GROQ_API_KEY:
                 raise ChatbotServiceError("GROQ_API_KEY no configurada en variables de entorno")
             
-            self.groq_client = Groq(api_key=chatbot_settings.GROQ_API_KEY)
+            self.groq_client = Groq(api_key=settings.GROQ_API_KEY)
             logger.info("✅ Cliente Groq inicializado correctamente")
             
         except Exception as e:
@@ -57,60 +62,63 @@ class ChatbotService:
     # MÉTODOS PARA CONFIGURACIÓN
     # ============================================
     
-    def get_tenant_config(self, tenant_id: str) -> ChatbotConfig:
+    def get_tenant_config(self, user_id: str) -> ChatbotConfig:
         """
         Obtiene la configuración del chatbot para un tenant específico.
         Si no existe, crea una configuración por defecto.
         """
         try:
+            logger.info(f"🔍 DEBUG: Buscando configuración para user_id: {user_id}")
+            
             # Buscar configuración existente
             config = self.db.exec(
-                select(ChatbotConfig).where(ChatbotConfig.tenant_id == tenant_id)
+                select(ChatbotConfig).where(ChatbotConfig.user_id == user_id)
             ).first()
             
+            logger.info(f"🔍 DEBUG: Configuración encontrada: {config is not None}")
+            
             if not config:
-                # Crear configuración por defecto
+                logger.info(f"⚠️ DEBUG: No se encontró configuración, creando por defecto para {user_id}")
+                
+                # Crear configuración por defecto con campos que SÍ existen
                 config = ChatbotConfig(
-                    tenant_id=tenant_id,
-                    groq_model=chatbot_settings.DEFAULT_GROQ_MODEL,
-                    system_prompt=(
-                        f"Eres el asistente virtual de {tenant_id.replace('_', ' ').title()}. "
+                    user_id=user_id,
+                    groq_api_key=settings.GROQ_API_KEY,  # Campo requerido que sí existe
+                    groq_model=settings.DEFAULT_GROQ_MODEL,
+                    prompt=(
+                        f"Eres el asistente virtual de {user_id.replace('_', ' ').title()}. "
                         f"Sé amable, profesional y responde en español. "
                         f"Si no sabes algo, dilo honestamente."
                     ),
-                    temperature=chatbot_settings.DEFAULT_TEMPERATURE,
-                    max_tokens=chatbot_settings.DEFAULT_MAX_TOKENS,
-                    max_history=chatbot_settings.DEFAULT_MAX_HISTORY,
-                    session_ttl_minutes=chatbot_settings.DEFAULT_SESSION_TTL_MINUTES,
-                    company_name=tenant_id.replace('_', ' ').title(),
-                    welcome_message=(
-                        f"¡Hola! Soy el asistente virtual de {tenant_id.replace('_', ' ').title()}. "
-                        f"¿En qué puedo ayudarte hoy?"
-                    ),
-                    is_active=True
+                    temperature=settings.DEFAULT_TEMPERATURE,
+                    is_active=True,
+                    created_at=datetime.now(),
+                    updated_at=datetime.now()
                 )
+                
+                logger.info(f"✅ DEBUG: Configuración por defecto creada")
                 
                 self.db.add(config)
                 self.db.commit()
                 self.db.refresh(config)
-                logger.info(f"✅ Configuración por defecto creada para tenant: {tenant_id}")
+                logger.info(f"✅ Configuración por defecto creada para tenant: {user_id}")
             
             return config
             
         except Exception as e:
-            logger.error(f"❌ Error obteniendo configuración para {tenant_id}: {str(e)}")
+            logger.error(f"❌ Error obteniendo configuración para {user_id}: {str(e)}")
             raise ChatbotServiceError(f"No se pudo obtener la configuración: {str(e)}")
     
-    def update_tenant_config(self, tenant_id: str, config_data: Dict[str, Any]) -> ChatbotConfig:
+    def update_tenant_config(self, user_id: str, config_data: Dict[str, Any]) -> ChatbotConfig:
         """
         Actualiza la configuración del chatbot para un tenant.
         """
         try:
-            config = self.get_tenant_config(tenant_id)
+            config = self.get_tenant_config(user_id)
             
             # Campos permitidos para actualizar
             allowed_fields = [
-                'groq_model', 'system_prompt', 'temperature', 
+                'groq_model', 'prompt', 'temperature', 
                 'max_tokens', 'max_history', 'session_ttl_minutes',
                 'enable_history', 'company_name', 'company_description',
                 'contact_info', 'branding', 'welcome_message', 'is_active'
@@ -130,11 +138,11 @@ class ChatbotService:
             self.db.commit()
             self.db.refresh(config)
             
-            logger.info(f"✅ Configuración actualizada para tenant: {tenant_id}")
+            logger.info(f"✅ Configuración actualizada para tenant: {user_id}")
             return config
             
         except Exception as e:
-            logger.error(f"❌ Error actualizando configuración para {tenant_id}: {str(e)}")
+            logger.error(f"❌ Error actualizando configuración para {user_id}: {str(e)}")
             raise ChatbotServiceError(f"No se pudo actualizar la configuración: {str(e)}")
     
     # ============================================
@@ -143,7 +151,7 @@ class ChatbotService:
     
     def create_session(
         self,
-        tenant_id: str,
+        user_id: str,
         user_identifier: Optional[str] = None,
         user_ip: Optional[str] = None,
         user_agent: Optional[str] = None,
@@ -154,7 +162,7 @@ class ChatbotService:
         Crea una nueva sesión de chat para un usuario final.
         
         Args:
-            tenant_id: ID del cliente/tenant
+            user_id: ID del cliente/tenant
             user_identifier: Identificador único del usuario (email, ID, etc.)
             user_ip: Dirección IP del usuario
             user_agent: User-Agent del navegador
@@ -166,10 +174,10 @@ class ChatbotService:
         """
         try:
             # Obtener configuración para el TTL
-            config = self.get_tenant_config(tenant_id)
+            config = self.get_tenant_config(user_id)
             
             # Generar clave única de sesión
-            session_key = f"{tenant_id}_{uuid.uuid4().hex[:12]}"
+            session_key = f"{user_id}_{uuid.uuid4().hex[:12]}"
             
             # Calcular fecha de expiración
             expires_at = datetime.now() + timedelta(minutes=config.session_ttl_minutes)
@@ -177,7 +185,7 @@ class ChatbotService:
             # Crear sesión
             session = ChatSession(
                 session_key=session_key,
-                tenant_id=tenant_id,
+                user_id=user_id,
                 user_identifier=user_identifier,
                 user_ip=user_ip,
                 user_agent=user_agent,
@@ -192,13 +200,13 @@ class ChatbotService:
             self.db.refresh(session)
             
             # Actualizar estadísticas
-            self._update_usage_stats(tenant_id, sessions_increment=1)
+            self._update_usage_stats(user_id, sessions_increment=1)
             
-            logger.info(f"✅ Nueva sesión creada: {session_key} para tenant: {tenant_id}")
+            logger.info(f"✅ Nueva sesión creada: {session_key} para tenant: {user_id}")
             return session
             
         except Exception as e:
-            logger.error(f"❌ Error creando sesión para {tenant_id}: {str(e)}")
+            logger.error(f"❌ Error creando sesión para {user_id}: {str(e)}")
             raise ChatbotServiceError(f"No se pudo crear la sesión: {str(e)}")
     
     def get_active_session(self, session_key: str) -> Optional[ChatSession]:
@@ -220,7 +228,7 @@ class ChatbotService:
                 session.last_activity = datetime.now()
                 
                 # Extender expiración según configuración
-                config = self.get_tenant_config(session.tenant_id)
+                config = self.get_tenant_config(session.user_id)
                 session.expires_at = datetime.now() + timedelta(minutes=config.session_ttl_minutes)
                 
                 self.db.add(session)
@@ -257,7 +265,7 @@ class ChatbotService:
     
     def get_user_sessions(
         self, 
-        tenant_id: str, 
+        user_id: str, 
         user_identifier: str,
         active_only: bool = True
     ) -> List[ChatSession]:
@@ -266,7 +274,7 @@ class ChatbotService:
         """
         try:
             query = select(ChatSession).where(
-                ChatSession.tenant_id == tenant_id,
+                ChatSession.user_id == user_id,
                 ChatSession.user_identifier == user_identifier
             )
             
@@ -299,7 +307,7 @@ class ChatbotService:
             self.db.commit()
             
             # Actualizar estadísticas
-            self._update_usage_stats(session.tenant_id, active_sessions_increment=-1)
+            self._update_usage_stats(session.user_id, active_sessions_increment=-1)
             
             logger.info(f"✅ Sesión cerrada: {session_key}")
             return True
@@ -343,7 +351,7 @@ class ChatbotService:
     
     def process_message(
         self,
-        tenant_id: str,
+        user_id: str,
         user_message: str,
         session_key: Optional[str] = None,
         user_context: Optional[Dict[str, Any]] = None,
@@ -353,7 +361,7 @@ class ChatbotService:
         Procesa un mensaje del usuario y devuelve la respuesta del chatbot.
         
         Args:
-            tenant_id: ID del cliente/tenant
+            user_id: ID del cliente/tenant
             user_message: Mensaje del usuario
             session_key: Clave de sesión existente (opcional)
             user_context: Contexto adicional del usuario (opcional)
@@ -362,14 +370,15 @@ class ChatbotService:
         Returns:
             tuple: (respuesta_ai, metadatos, session_key)
         """
+        logger.info(f"💬 DEBUG: Iniciando process_message para user_id: {user_id}, session_key: {session_key}")
         try:
             # 1. Validar mensaje
             if not user_message or len(user_message.strip()) == 0:
                 raise ChatbotServiceError("El mensaje no puede estar vacío")
             
-            if len(user_message) > chatbot_settings.MAX_MESSAGE_LENGTH:
-                user_message = user_message[:chatbot_settings.MAX_MESSAGE_LENGTH]
-                logger.warning(f"⚠️ Mensaje truncado a {chatbot_settings.MAX_MESSAGE_LENGTH} caracteres")
+            if len(user_message) > settings.MAX_MESSAGE_LENGTH:
+                user_message = user_message[:settings.MAX_MESSAGE_LENGTH]
+                logger.warning(f"⚠️ Mensaje truncado a {settings.MAX_MESSAGE_LENGTH} caracteres")
             
             # 2. Obtener o crear sesión
             session = None
@@ -378,7 +387,7 @@ class ChatbotService:
             
             if not session and create_new_session:
                 session = self.create_session(
-                    tenant_id=tenant_id,
+                    user_id=user_id,
                     user_identifier=user_context.get('email') if user_context else None
                 )
                 session_key = session.session_key
@@ -388,7 +397,7 @@ class ChatbotService:
                 session_key = session.session_key
             
             # 3. Obtener configuración del tenant
-            config = self.get_tenant_config(tenant_id)
+            config = self.get_tenant_config(user_id)
             
             if not config.is_active:
                 raise ChatbotServiceError("El chatbot está desactivado para este cliente")
@@ -432,13 +441,13 @@ class ChatbotService:
             
             # 8. Actualizar estadísticas
             self._update_usage_stats(
-                tenant_id=tenant_id,
+                user_id=user_id,
                 messages_increment=1,
                 tokens_increment=usage_info.get('total_tokens', 0)
             )
             
             logger.info(
-                f"✅ Mensaje procesado - Tenant: {tenant_id}, "
+                f"✅ Mensaje procesado - Tenant: {user_id}, "
                 f"Sesión: {session_key[:10]}..., "
                 f"Tokens: {usage_info.get('total_tokens', 0)}"
             )
@@ -470,18 +479,18 @@ class ChatbotService:
         messages = []
         
         # 1. Prompt del sistema
-        system_prompt = config.system_prompt
+        prompt = config.prompt
         
         # Agregar información de la empresa si existe
         if config.company_name:
-            system_prompt += f"\n\nEmpresa: {config.company_name}"
+            prompt += f"\n\nEmpresa: {config.company_name}"
         
         if config.company_description:
-            system_prompt += f"\nDescripción: {config.company_description}"
+            prompt += f"\nDescripción: {config.company_description}"
         
         messages.append({
             "role": "system",
-            "content": system_prompt
+            "content": prompt
         })
         
         # 2. Contexto del usuario (opcional)
@@ -544,9 +553,9 @@ class ChatbotService:
             
         except BadRequestError as e:
             # Intentar con modelo por defecto si falla el específico
-            if config.groq_model != chatbot_settings.DEFAULT_GROQ_MODEL:
+            if config.groq_model != settings.DEFAULT_GROQ_MODEL:
                 logger.warning(f"⚠️ Modelo {config.groq_model} falló, intentando con modelo por defecto")
-                config.groq_model = chatbot_settings.DEFAULT_GROQ_MODEL
+                config.groq_model = settings.DEFAULT_GROQ_MODEL
                 return self._call_groq_api(messages, config)
             else:
                 raise
@@ -595,7 +604,7 @@ class ChatbotService:
     
     def _update_usage_stats(
         self,
-        tenant_id: str,
+        user_id: str,
         sessions_increment: int = 0,
         active_sessions_increment: int = 0,
         messages_increment: int = 0,
@@ -604,7 +613,7 @@ class ChatbotService:
         """
         Actualiza las estadísticas de uso del chatbot.
         """
-        if not chatbot_settings.ENABLE_ANALYTICS:
+        if not settings.ENABLE_ANALYTICS:
             return
         
         try:
@@ -613,7 +622,7 @@ class ChatbotService:
             # Buscar registro existente para hoy
             stats = self.db.exec(
                 select(ChatbotUsageStats).where(
-                    ChatbotUsageStats.tenant_id == tenant_id,
+                    ChatbotUsageStats.user_id == user_id,
                     ChatbotUsageStats.date == today
                 )
             ).first()
@@ -621,7 +630,7 @@ class ChatbotService:
             if not stats:
                 # Crear nuevo registro
                 stats = ChatbotUsageStats(
-                    tenant_id=tenant_id,
+                    user_id=user_id,
                     date=today,
                     total_sessions=max(sessions_increment, 0),
                     active_sessions=max(active_sessions_increment, 0),
@@ -645,7 +654,7 @@ class ChatbotService:
     
     def get_usage_stats(
         self, 
-        tenant_id: str, 
+        user_id: str, 
         start_date: Optional[str] = None,
         end_date: Optional[str] = None
     ) -> List[ChatbotUsageStats]:
@@ -654,7 +663,7 @@ class ChatbotService:
         """
         try:
             query = select(ChatbotUsageStats).where(
-                ChatbotUsageStats.tenant_id == tenant_id
+                ChatbotUsageStats.user_id == user_id
             )
             
             if start_date:
@@ -669,26 +678,26 @@ class ChatbotService:
             return list(stats) if stats else []
             
         except Exception as e:
-            logger.error(f"❌ Error obteniendo estadísticas para {tenant_id}: {str(e)}")
+            logger.error(f"❌ Error obteniendo estadísticas para {user_id}: {str(e)}")
             return []
     
     # ============================================
     # MÉTODOS AUXILIARES
     # ============================================
     
-    def get_welcome_message(self, tenant_id: str) -> str:
+    def get_welcome_message(self, user_id: str) -> str:
         """
         Obtiene el mensaje de bienvenida personalizado para un tenant.
         """
         try:
-            config = self.get_tenant_config(tenant_id)
+            config = self.get_tenant_config(user_id)
             return config.welcome_message or "¡Hola! ¿En qué puedo ayudarte?"
             
         except Exception as e:
             logger.error(f"❌ Error obteniendo mensaje de bienvenida: {str(e)}")
             return "¡Hola! ¿En qué puedo ayudarte?"
     
-    def validate_tenant_access(self, tenant_id: str, session_key: str) -> bool:
+    def validate_tenant_access(self, user_id: str, session_key: str) -> bool:
         """
         Valida que una sesión pertenezca a un tenant específico.
         """
@@ -696,7 +705,7 @@ class ChatbotService:
             session = self.db.exec(
                 select(ChatSession).where(
                     ChatSession.session_key == session_key,
-                    ChatSession.tenant_id == tenant_id
+                    ChatSession.user_id == user_id
                 )
             ).first()
             

@@ -7,6 +7,7 @@ from .endpoints import images
 from .endpoints import carrousel
 from .endpoints import category
 from .endpoints import company
+from .endpoints import chatbot
 from .endpoints import contact
 from .endpoints import manager
 from .endpoints import reviews
@@ -27,6 +28,7 @@ api_router.include_router(token.router, prefix="/auth", tags=["Login"])
 api_router.include_router(user.router, prefix="/users", tags=["User"])
 api_router.include_router(images.router, prefix="/images", tags=["Images"])
 api_router.include_router(carrousel.router, prefix="/carrousel", tags=["Carrousel"])
+api_router.include_router(chatbot.router, prefix="/chat", tags=["Chatbot"])
 api_router.include_router(category.router, prefix="/category", tags=["Category"])
 api_router.include_router(company.router, prefix="/company", tags=["Company"])
 api_router.include_router(contact.router, prefix="/contact", tags=["Contact"])
