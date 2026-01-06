@@ -1,36 +1,48 @@
 import logging
 from datetime import datetime, timezone
 from sqlalchemy.orm import selectinload
-from typing import Optional, List
-from fastapi import APIRouter, Depends, HTTPException, status, Request, BackgroundTasks
-from fastapi.responses import JSONResponse
+from typing import Any, Dict, Optional, List
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 from sqlmodel import SQLModel, Session, select
+import hashlib
 from app.api.endpoints.user import UserResponse
 from app.models.wep_chatbot_model import (
-    ChatRequest,
-    ChatResponse,
     ChatbotConfig,
     ChatbotModel,
-    SessionInfo,
+    ChatbotUsage,
 )
 from app.models.wep_user_model import WepUserModel
-from app.services.chatbot import ChatbotService, get_chatbot_service, ChatbotServiceError
+from app.services.chatbot import get_chatbot_service, ChatbotServiceError
 from app.api.endpoints.token import verify_token, get_tenant_session
 from app.config.config import settings
 
 # Configurar logging
 logger = logging.getLogger(__name__)
 
+class ChatRequest(SQLModel):
+    """Modelo para peticiones de chat"""
+    message: str
+    session_key: Optional[str] = None
+    user_context: Optional[Dict[str, Any]] = None
+    reset_conversation: bool = False
+
+class ChatResponse(SQLModel):
+    """Modelo para respuestas del chatbot"""
+    response: str
+    session_key: str
+
 class ChatbotModelCreate(SQLModel):
     """Crear nuevo modelo de IA"""
     name: str
     provider: str
+    daily_token_limit: int = 100000
     
 class ChatbotModelUpdate(SQLModel):
-    """Crear nuevo modelo de IA"""
+    """Actualizar modelo de IA"""
     name: Optional[str] = None
     provider: Optional[str] = None
     status: Optional[bool] = None
+    daily_token_limit: Optional[int] = None
 
 class ChatbotModelResponse(SQLModel):
     """Response de modelo de IA"""
@@ -38,6 +50,7 @@ class ChatbotModelResponse(SQLModel):
     name: str
     provider: str
     status: bool
+    daily_token_limit: int
 
 class ChatbotConfigCreate(SQLModel):
     """Crear configuración desde el dashboard"""
@@ -66,213 +79,217 @@ class ChatbotConfigResponse(SQLModel):
     status: bool
     created_at: datetime
     updated_at: datetime
+    
+    tokens_used_today: int = 0
+    tokens_limit: int
+    tokens_remaining: int
+    usage_percentage: float
 
 # Crear router
 router = APIRouter()
 
-# ============================================
-# MIDDLEWARE Y DEPENDENCIAS ESPECÍFICAS
-# ============================================
-
-def schedule_cleanup(background_tasks: BackgroundTasks, chatbot_service: ChatbotService):
+def _calculate_token_usage(
+    db: Session,
+    api_key: str,
+    model_id: int,
+    daily_token_limit: int
+) -> dict:
     """
-    Programa la limpieza de sesiones expiradas en segundo plano.
+    Calcula el uso de tokens para una API key y modelo específico.
     """
-    def cleanup_task():
-        try:
-            cleaned = chatbot_service.cleanup_expired_sessions()
-            if cleaned > 0:
-                logger.info(f"🧹 Tarea de limpieza: {cleaned} sesiones expiradas eliminadas")
-        except Exception as e:
-            logger.error(f"❌ Error en tarea de limpieza: {str(e)}")
+    today = datetime.now(timezone.utc).date()
     
-    background_tasks.add_task(cleanup_task)
-
+    # Buscar el registro de uso de HOY
+    usage_record = db.exec(
+        select(ChatbotUsage).where(
+            ChatbotUsage.api_key == api_key,
+            ChatbotUsage.model_id == model_id,
+            ChatbotUsage.date == today
+        )
+    ).first()
+    
+    tokens_used = usage_record.tokens_used if usage_record else 0
+    tokens_remaining = max(0, daily_token_limit - tokens_used)
+    usage_percentage = (tokens_used / daily_token_limit * 100) if daily_token_limit > 0 else 0
+    
+    return {
+        "tokens_used_today": tokens_used,
+        "tokens_limit": daily_token_limit,
+        "tokens_remaining": tokens_remaining,
+        "usage_percentage": round(usage_percentage, 2)
+    }
 
 # ============================================
 # ENDPOINTS DE CHAT
 # ============================================
 
 @router.post(
-    "/chat",
-    response_model=ChatResponse,
+    "/",
     summary="Enviar mensaje al chatbot",
-    description="""
-    Envía un mensaje al chatbot y recibe una respuesta.
-    
-    - Si no se proporciona `session_key`, se crea una nueva sesión
-    - Las sesiones expiran automáticamente después de un tiempo de inactividad
-    - El historial de conversación se mantiene dentro de la sesión
-    - Se usa la configuración específica del cliente (tenant)
-    """,
+    description="Envía un mensaje al chatbot y recibe una respuesta optimizada según el tipo de usuario.",
     responses={
         200: {"description": "Respuesta del chatbot generada exitosamente"},
         400: {"description": "Solicitud inválida o mensaje vacío"},
         401: {"description": "No autenticado - token inválido o expirado"},
-        403: {"description": "No autorizado - chatbot desactivado para este cliente"},
+        403: {"description": "No autorizado - chatbot desactivado o no configurado"},
+        429: {"description": "Demasiadas solicitudes - rate limit excedido"},
         500: {"description": "Error interno del servidor"}
     }
 )
 async def send_message(
-    request: Request,
     chat_request: ChatRequest,
-    background_tasks: BackgroundTasks,
     current_user: WepUserModel = Depends(verify_token),
     db: Session = Depends(get_tenant_session),
-):
+) :
     """
     Endpoint principal para interactuar con el chatbot.
     
-    Cada cliente (tenant) tiene su propia configuración y sesiones independientes.
+    Respuestas optimizadas:
+    - Website: Solo response + session_key (ligero)
+    - Dashboard: Incluye métricas y debugging info (completo)
     """
-    logger.info(f"📩 Nuevo mensaje recibido - Tenant: {current_user.client}")
+    source = getattr(current_user, 'source', 'unknown')
+    
+    logger.info(f"📩 Mensaje recibido - Source: {source}, User: {current_user.email}")
     
     try:
-        # 1. Inicializar servicio
+        # Determinar el user_id a usar para obtener la configuración
+        if source == "website":
+            # Para usuarios del website, buscar el usuario owner/admin del cliente
+            owner_user = db.exec(
+                select(WepUserModel)
+                .where(
+                    WepUserModel.client == current_user.client,
+                    WepUserModel.email.like("%@shirkasoft.com")
+                )
+            ).first()
+            
+            if not owner_user:
+                # Alternativa: buscar cualquier usuario del cliente que tenga configuración
+                config_user = db.exec(
+                    select(WepUserModel)
+                    .join(ChatbotConfig, ChatbotConfig.user_id == WepUserModel.id)
+                    .where(WepUserModel.client == current_user.client)
+                ).first()
+                
+                if not config_user:
+                    raise HTTPException(
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        detail="El chatbot no está configurado para este cliente."
+                    )
+                user_id = config_user.id
+                logger.info(f"🔑 Website usando config de: {config_user.email}")
+            else:
+                user_id = owner_user.id
+                logger.info(f"🔑 Website usando config del owner: {owner_user.email}")
+        else:
+            # Para usuarios del dashboard, usar su propio ID
+            user_id = current_user.id
+            logger.info(f"🔑 Dashboard usando config propia: {current_user.email}")
+        
+        # Inicializar servicio
         chatbot_service = get_chatbot_service(db)
         
-        # 2. Extraer información del request para contexto
-        user_context = chat_request.user_context or {}
+        # Procesar el mensaje
+        conversation_history = None
+        if chat_request.user_context and 'conversation_history' in chat_request.user_context:
+            conversation_history = chat_request.user_context['conversation_history']
         
-        # Agregar información del usuario si está disponible
-        if hasattr(current_user, 'email') and current_user.email:
-            user_context['user_email'] = current_user.email
+        ai_response, usage_info, session_key = chatbot_service.process_message(
+            user_id=user_id,
+            user_message=chat_request.message,
+            session_key=chat_request.session_key,
+            conversation_history=conversation_history
+        )
         
-        if hasattr(current_user, 'full_name') and current_user.full_name:
-            user_context['user_name'] = current_user.full_name
-        
-        # Agregar información de la solicitud HTTP
-        user_context.update({
-            'user_ip': request.client.host if request.client else None,
-            'user_agent': request.headers.get("user-agent"),
-            'source': getattr(current_user, 'source', 'unknown'),
-            'timestamp': datetime.now().isoformat()
-        })
-        
-        # 3. Determinar si crear nueva sesión
-        create_new_session = False
-        session_key = chat_request.session_key
-        
-        if chat_request.reset_conversation:
-            logger.info(f"🔄 Reiniciando conversación solicitada para tenant: {current_user.client}")
-            create_new_session = True
-            session_key = None
-        elif not session_key:
-            create_new_session = True
-        
-        # 4. Procesar el mensaje
-        try:
-            ai_response, usage_info, session_key = chatbot_service.process_message(
-                tenant_id=current_user.id,
-                user_message=chat_request.message,
-                session_key=session_key,
-                user_context=user_context,
-                create_new_session=create_new_session
-            )
-            
-        except ChatbotServiceError as e:
-            error_msg = str(e)
-            
-            # Manejar errores específicos
-            if "desactivado" in error_msg.lower():
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail="El chatbot está desactivado para este cliente"
-                )
-            elif "sesión no encontrada" in error_msg.lower():
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="La sesión ha expirado. Por favor, inicia una nueva conversación."
-                )
-            else:
-                # Error genérico
-                if settings.SHOW_DETAILED_ERRORS:
-                    detail = error_msg
-                else:
-                    detail = settings.FALLBACK_RESPONSE
-                    ai_response = detail
-                    usage_info = {}
-                    # Intentar crear nueva sesión como fallback
-                    try:
-                        ai_response, usage_info, session_key = chatbot_service.process_message(
-                            tenant_id=current_user.id,
-                            user_message=chat_request.message,
-                            session_key=None,
-                            user_context=user_context,
-                            create_new_session=True
-                        )
-                    except:
-                        pass  # Usar el fallback ya establecido
-        
-        # 5. Programar limpieza en segundo plano
-        schedule_cleanup(background_tasks, chatbot_service)
-        
-        # 6. Generar sugerencias si está habilitado
+        # Generar sugerencias solo si están habilitadas
         suggestions = None
-        if settings.ENABLE_SUGGESTIONS:
+        if getattr(settings, 'ENABLE_SUGGESTIONS', False):
             suggestions = _generate_suggestions(ai_response)
         
-        # 7. Crear respuesta
-        response = ChatResponse(
-            response=ai_response,
-            session_key=session_key,
-            model_used=usage_info.get('model'),
-            usage={
-                "prompt_tokens": usage_info.get('prompt_tokens', 0),
-                "completion_tokens": usage_info.get('completion_tokens', 0),
-                "total_tokens": usage_info.get('total_tokens', 0)
-            } if usage_info else None,
-            suggestions=suggestions
-        )
+        logger.info(f"✅ Respuesta enviada - Tokens: {usage_info.get('total_tokens', 0)}")
         
-        logger.info(
-            f"✅ Respuesta enviada - Tenant: {current_user.id}, "
-            f"Sesión: {session_key[:10]}..., "
-            f"Tokens: {response.usage.get('total_tokens', 0) if response.usage else 0}"
-        )
-        
-        return response
+        # Retornar respuesta optimizada según el tipo de usuario
+        if source == "website":
+            # Respuesta ligera para website (solo lo esencial)
+            return ChatResponse(
+                response=ai_response,
+                session_key=session_key,
+            )
+        else:
+            # Respuesta completa para dashboard (con métricas)
+            return None
         
     except HTTPException:
         raise
+    except ChatbotServiceError as e:
+        error_msg = str(e)
+        
+        # Manejar errores específicos
+        if "API key de Groq inválida" in error_msg or "sin permisos" in error_msg:
+            status_code = status.HTTP_403_FORBIDDEN
+            detail = "La configuración del chatbot es inválida. Por favor, actualiza tu API key de Groq en el dashboard."
+        elif "desactivado" in error_msg.lower() or "no configurado" in error_msg.lower() or "No se encontró configuración" in error_msg:
+            status_code = status.HTTP_403_FORBIDDEN
+            detail = "El chatbot no está disponible. Por favor, configúralo desde el dashboard." if source == "dashboard" else "El chatbot no está disponible en este momento."
+        elif "mensaje vacío" in error_msg.lower():
+            status_code = status.HTTP_400_BAD_REQUEST
+            detail = "El mensaje no puede estar vacío"
+        elif "modelo" in error_msg.lower() and "no es válido" in error_msg.lower():
+            status_code = status.HTTP_400_BAD_REQUEST
+            detail = error_msg
+        elif "Rate limit" in error_msg or "excedido el límite" in error_msg:
+            status_code = status.HTTP_429_TOO_MANY_REQUESTS
+            detail = "Has excedido el límite de solicitudes. Por favor, intenta de nuevo en unos momentos."
+        else:
+            status_code = status.HTTP_500_INTERNAL_SERVER_ERROR
+            detail = error_msg if getattr(settings, 'SHOW_DETAILED_ERRORS', False) else "Error procesando el mensaje"
+        
+        raise HTTPException(status_code=status_code, detail=detail)
+        
     except Exception as e:
-        logger.error(f"❌ Error inesperado en endpoint /chat: {str(e)}")
+        logger.error(f"❌ Error inesperado: {str(e)}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=settings.FALLBACK_RESPONSE
+            detail="Error interno del servidor"
         )
 
-@router.get(
-    "/welcome",
-    summary="Obtener mensaje de bienvenida",
-    description="Devuelve el mensaje de bienvenida personalizado del chatbot para el cliente actual.",
-    responses={
-        200: {"description": "Mensaje de bienvenida obtenido exitosamente"},
-        401: {"description": "No autenticado"},
-        500: {"description": "Error interno del servidor"}
-    }
-)
-async def get_welcome_message(
-    current_user: WepUserModel = Depends(verify_token),
-    db: Session = Depends(get_tenant_session),
-):
-    """Obtiene el mensaje de bienvenida personalizado del chatbot."""
-    try:
-        chatbot_service = get_chatbot_service(db)
-        welcome_message = chatbot_service.get_welcome_message(current_user.id)
-        
-        return {
-            "welcome_message": welcome_message,
-            "tenant_id": current_user.id,
-            "timestamp": datetime.now().isoformat()
-        }
-        
-    except Exception as e:
-        logger.error(f"❌ Error obteniendo mensaje de bienvenida: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="No se pudo obtener el mensaje de bienvenida"
-        )
+
+def _generate_suggestions(response_text: str) -> List[str]:
+    """
+    Genera sugerencias inteligentes basadas en la respuesta del chatbot.
+    
+    Nota: Actualmente deshabilitado por defecto.
+    Para habilitarlo, configurar ENABLE_SUGGESTIONS=true en settings.
+    """
+    suggestions = []
+    response_lower = response_text.lower()
+    
+    # Sugerencias basadas en palabras clave del negocio
+    if any(word in response_lower for word in ["masaje", "spa", "relajación", "terapia"]):
+        suggestions.append("Ver tipos de masajes")
+    
+    if any(word in response_lower for word in ["precio", "costo", "tarifa", "paquete"]):
+        suggestions.append("Ver precios y paquetes")
+    
+    if any(word in response_lower for word in ["agendar", "reservar", "cita", "horario"]):
+        suggestions.append("Agendar una cita")
+    
+    if any(word in response_lower for word in ["ubicación", "dirección", "llegar", "dónde"]):
+        suggestions.append("Ver ubicación")
+    
+    if any(word in response_lower for word in ["contacto", "llamar", "whatsapp", "teléfono"]):
+        suggestions.append("Contactar por WhatsApp")
+    
+    # Si no hay sugerencias específicas, agregar genéricas
+    if len(suggestions) == 0:
+        suggestions = [
+            "Ver servicios disponibles",
+            "Agendar una cita",
+            "Hablar con un asesor"
+        ]
+    
+    return suggestions[:3]
 
 # ============================================
 # ENDPOINTS DE CONFIGURACIÓN
@@ -280,7 +297,6 @@ async def get_welcome_message(
 
 @router.post(
     "/config/",
-    response_model=ChatbotConfigResponse,
     status_code=status.HTTP_201_CREATED,
     summary="Crear configuración de chatbot",
     description="Crea una nueva configuración de chatbot para un usuario desde el dashboard"
@@ -314,7 +330,7 @@ async def create_config(
         # Crear nueva configuración
         new_config = ChatbotConfig(
             user_id=config_data.user_id,
-            api_key=config_data.api_key,
+            api_key=hashlib.sha256(config_data.api_key.encode()).hexdigest(),
             model_id=config_data.model_id,
             prompt=config_data.prompt,
             temperature=config_data.temperature,
@@ -329,16 +345,7 @@ async def create_config(
         
         logger.info(f"✅ Configuración creada para user_id: {config_data.user_id}")
         
-        return ChatbotConfigResponse(
-            id=new_config.id,
-            user_id=new_config.user_id,
-            model_id=new_config.model_id,
-            prompt=new_config.prompt,
-            temperature=new_config.temperature,
-            status=new_config.status,
-            created_at=new_config.created_at,
-            updated_at=new_config.updated_at
-        )
+        return Response(status_code=status.HTTP_201_CREATED)
         
     except HTTPException:
         raise
@@ -398,10 +405,44 @@ async def list_configs(
     current_user: WepUserModel = Depends(verify_token),
     db: Session = Depends(get_tenant_session),
 ):
-    """Lista todas las configuraciones."""
+    """Lista todas las configuraciones con información de tokens."""
     try:
+        # Cargar todas las configs con relaciones
+        configs = db.exec(
+            select(ChatbotConfig)
+            .options(
+                selectinload(ChatbotConfig.user),
+                selectinload(ChatbotConfig.model)
+            )
+            .order_by(ChatbotConfig.id)
+        ).all()
         
-        return db.exec(select(ChatbotConfig).options(selectinload(ChatbotConfig.user),selectinload(ChatbotConfig.model)).order_by(ChatbotConfig.id)).all()
+        # ✅ Agregar información de tokens a cada config
+        result = []
+        for config in configs:
+            # Calcular uso de tokens
+            token_usage = _calculate_token_usage(
+                db=db,
+                api_key=config.api_key,
+                model_id=config.model_id,
+                daily_token_limit=config.model.daily_token_limit
+            )
+            
+            result.append(
+                ChatbotConfigResponse(
+                    id=config.id,
+                    user=config.user,
+                    model=config.model,
+                    prompt=config.prompt,
+                    temperature=config.temperature,
+                    status=config.status,
+                    created_at=config.created_at,
+                    updated_at=config.updated_at,
+                    **token_usage
+                )
+            )
+        
+        return result
         
     except Exception as e:
         logger.error(f"❌ Error listando configuraciones: {str(e)}")
@@ -413,7 +454,7 @@ async def list_configs(
 @router.patch("/config/{config_id}/", response_model=ChatbotConfigResponse)
 async def update_config(
     config_id: int,
-    config_update: ChatbotConfigUpdate,
+    data: ChatbotConfigUpdate,
     current_user: WepUserModel = Depends(verify_token),
     db: Session = Depends(get_tenant_session),
 ):
@@ -427,20 +468,20 @@ async def update_config(
                 detail="Configuración de IA no encontrada"
             )
         
-        if config_update.model_id is not None:
-            config.model_id = config_update.model_id
+        if data.model_id is not None:
+            config.model_id = data.model_id
         
-        if config_update.user_id is not None:
-            config.user_id = config_update.user_id
+        if data.user_id is not None:
+            config.user_id = data.user_id
             
-        if config_update.prompt is not None:
-            config.prompt = config_update.prompt
+        if data.prompt is not None:
+            config.prompt = data.prompt
             
-        if config_update.api_key is not None:
-            config.api_key = config_update.api_key
+        if data.api_key is not None:
+            config.api_key = data.api_key
             
-        if config_update.status is not None:
-            config.status = config_update.status
+        if data.status is not None:
+            config.status = data.status
 
         config.updated_at = datetime.now(timezone.utc)
 
@@ -459,36 +500,24 @@ async def update_config(
             detail="Error al actualizar la configuración"
         )
 
-@router.delete("/config/{user_id}/", response_model=ChatbotConfigResponse)
+@router.delete("/config/{config_id}/", response_model=ChatbotConfigResponse)
 async def delete_config(
-    user_id: int,
+    config_id: int,
     current_user: WepUserModel = Depends(verify_token),
     db: Session = Depends(get_tenant_session),
 ):
     """Elimina configuración de un usuario."""
-    try:
-        config = db.exec(
-            select(ChatbotConfig).where(ChatbotConfig.user_id == user_id)
-        ).first()
+
+    config = db.get(ChatbotConfig, config_id)
         
-        if not config:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"No existe configuración para el usuario {user_id}"
-            )
-        
-        db.delete(config)
-        db.commit()
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"❌ Error eliminando configuración: {str(e)}")
-        db.rollback()
+    if not config:
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Error al eliminar la configuración"
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"No existe configuración con id {config_id}"
         )
+        
+    db.delete(config)
+    db.commit()
 
 # ============================================
 # ENDPOINTS DE ADMINISTRACIÓN Y MONITOREO
@@ -584,10 +613,10 @@ async def update_model(
 @router.delete("/models/{model_id}/", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_model(
     model_id: int,
-    session: Session = Depends(get_tenant_session)
+    db: Session = Depends(get_tenant_session)
 ):
     """Eliminar modelo de IA"""
-    model = session.get(ChatbotModel, model_id)
+    model = db.get(ChatbotModel, model_id)
     if not model:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -595,7 +624,7 @@ async def delete_model(
         )
     
     # Verificar si hay configs usando este modelo
-    configs_using = session.exec(
+    configs_using = db.exec(
         select(ChatbotConfig).where(ChatbotConfig.model_id == model_id)
     ).first()
     
@@ -605,255 +634,5 @@ async def delete_model(
             detail="Cannot delete model. It's being used by configurations"
         )
     
-    session.delete(model)
-    session.commit()
-
-# ============================================
-# ENDPOINTS DE ADMINISTRACIÓN Y MONITOREO
-# ============================================
-
-@router.get(
-    "/stats",
-    summary="Obtener estadísticas de uso",
-    description="Obtiene estadísticas de uso del chatbot para el cliente actual.",
-    responses={
-        200: {"description": "Estadísticas obtenidas exitosamente"},
-        401: {"description": "No autenticado"},
-        403: {"description": "No autorizado para ver estadísticas"},
-        500: {"description": "Error interno del servidor"}
-    }
-)
-async def get_usage_stats(
-    start_date: Optional[str] = None,
-    end_date: Optional[str] = None,
-    current_user: WepUserModel = Depends(verify_token),
-    db: Session = Depends(get_tenant_session),
-):
-    """Obtiene estadísticas de uso del chatbot."""
-    try:
-        # Verificar permisos (solo dashboard)
-        user_source = getattr(current_user, 'source', 'unknown')
-        if user_source != 'dashboard':
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Solo los usuarios del dashboard pueden ver estadísticas"
-            )
-        
-        chatbot_service = get_chatbot_service(db)
-        
-        # Obtener estadísticas
-        stats = chatbot_service.get_usage_stats(current_user.id, start_date, end_date)
-        
-        # Formatear respuesta
-        formatted_stats = []
-        total_sessions = 0
-        total_messages = 0
-        total_tokens = 0
-        
-        for stat in stats:
-            formatted_stats.append({
-                "date": stat.date,
-                "total_sessions": stat.total_sessions,
-                "active_sessions": stat.active_sessions,
-                "total_messages": stat.total_messages,
-                "total_tokens": stat.total_tokens,
-                "estimated_cost": stat.estimated_cost,
-                "updated_at": stat.updated_at.isoformat()
-            })
-            
-            total_sessions += stat.total_sessions
-            total_messages += stat.total_messages
-            total_tokens += stat.total_tokens
-        
-        return {
-            "tenant_id": current_user.id,
-            "period": {
-                "start_date": start_date,
-                "end_date": end_date
-            },
-            "totals": {
-                "total_sessions": total_sessions,
-                "total_messages": total_messages,
-                "total_tokens": total_tokens
-            },
-            "daily_stats": formatted_stats
-        }
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"❌ Error obteniendo estadísticas: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="No se pudieron obtener las estadísticas"
-        )
-
-
-@router.post(
-    "/cleanup",
-    summary="Forzar limpieza de sesiones",
-    description="Fuerza la limpieza de sesiones expiradas (normalmente se hace automáticamente).",
-    responses={
-        200: {"description": "Limpieza ejecutada exitosamente"},
-        401: {"description": "No autenticado"},
-        403: {"description": "No autorizado para ejecutar limpieza"},
-        500: {"description": "Error interno del servidor"}
-    }
-)
-async def force_cleanup(
-    current_user: WepUserModel = Depends(verify_token),
-    db: Session = Depends(get_tenant_session),
-):
-    """Fuerza la limpieza de sesiones expiradas."""
-    try:
-        # Verificar permisos (solo dashboard)
-        user_source = getattr(current_user, 'source', 'unknown')
-        if user_source != 'dashboard':
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Solo los usuarios del dashboard pueden forzar limpieza"
-            )
-        
-        chatbot_service = get_chatbot_service(db)
-        cleaned = chatbot_service.cleanup_expired_sessions()
-        
-        return {
-            "message": f"Limpieza completada. {cleaned} sesiones expiradas eliminadas.",
-            "tenant_id": current_user.id,
-            "sessions_cleaned": cleaned,
-            "timestamp": datetime.now().isoformat()
-        }
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"❌ Error forzando limpieza: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="No se pudo ejecutar la limpieza"
-        )
-
-
-@router.get(
-    "/health",
-    summary="Verificar salud del chatbot",
-    description="Verifica que el chatbot esté funcionando correctamente.",
-    responses={
-        200: {"description": "Chatbot funcionando correctamente"},
-        500: {"description": "Problemas detectados en el chatbot"}
-    }
-)
-async def health_check(
-    current_user: WepUserModel = Depends(verify_token),
-    db: Session = Depends(get_tenant_session),
-):
-    """Endpoint de health check para el chatbot."""
-    try:
-        chatbot_service = get_chatbot_service(db)
-        
-        # 1. Verificar configuración del tenant
-        config = chatbot_service.get_tenant_config(current_user.id)
-        
-        # 2. Verificar conexión con Groq (puede ser liviano)
-        try:
-            # Intentar una operación simple de Groq
-            models = chatbot_service.groq_client.models.list()
-            groq_status = "connected"
-            available_models = len(models.data) if hasattr(models, 'data') else "unknown"
-        except Exception as e:
-            groq_status = f"error: {str(e)}"
-            available_models = 0
-        
-        # 3. Obtener estadísticas básicas
-        active_sessions = len(chatbot_service.get_user_sessions(
-            tenant_id=current_user.id,
-            user_identifier=None,
-            active_only=True
-        ))
-        
-        return {
-            "status": "healthy",
-            "tenant_id": current_user.id,
-            "chatbot_active": config.is_active,
-            "groq_status": groq_status,
-            "available_models": available_models,
-            "active_sessions": active_sessions,
-            "timestamp": datetime.now().isoformat()
-        }
-        
-    except Exception as e:
-        logger.error(f"❌ Health check falló: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=f"Chatbot no está completamente operacional: {str(e)}"
-        )
-
-
-# ============================================
-# FUNCIONES AUXILIARES
-# ============================================
-
-def _generate_suggestions(response_text: str) -> List[str]:
-    """
-    Genera sugerencias basadas en la respuesta del chatbot.
-    Esta es una implementación básica que puedes mejorar.
-    """
-    if not settings.ENABLE_SUGGESTIONS:
-        return None
-    
-    suggestions = []
-    response_lower = response_text.lower()
-    
-    # Sugerencias basadas en contenido común
-    if any(word in response_lower for word in ["producto", "catálogo", "compra"]):
-        suggestions.append("Ver productos similares")
-    
-    if any(word in response_lower for word in ["precio", "costo", "valor"]):
-        suggestions.append("Consultar precios detallados")
-    
-    if any(word in response_lower for word in ["horario", "contacto", "llamar"]):
-        suggestions.append("Contactar con un agente")
-    
-    if any(word in response_lower for word in ["problema", "error", "soporte"]):
-        suggestions.append("Abrir ticket de soporte")
-    
-    # Sugerencias genéricas
-    if len(suggestions) < 3:
-        generic_suggestions = [
-            "¿Puedes explicarlo de otra manera?",
-            "Necesito más información",
-            "¿Tienes alguna recomendación?"
-        ]
-        suggestions.extend(generic_suggestions[:3 - len(suggestions)])
-    
-    return suggestions[:3]  # Máximo 3 sugerencias
-
-
-# ============================================
-# MANEJO DE EXCEPCIONES GLOBAL
-# ============================================
-
-async def chatbot_service_exception_handler(request, exc):
-    """Manejador de excepciones específicas del servicio de chatbot."""
-    logger.error(f"❌ ChatbotServiceError: {str(exc)}")
-    
-    return JSONResponse(
-        status_code=status.HTTP_400_BAD_REQUEST,
-        content={
-            "error": "Error del servicio de chatbot",
-            "detail": str(exc) if settings.SHOW_DETAILED_ERRORS else "Error interno del chatbot"
-        }
-    )
-
-
-async def general_exception_handler(request, exc):
-    """Manejador de excepciones generales."""
-    logger.error(f"❌ Excepción no manejada en chatbot: {str(exc)}")
-    
-    return JSONResponse(
-        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-        content={
-            "error": "Error interno del servidor",
-            "detail": settings.FALLBACK_RESPONSE
-        }
-    )
+    db.delete(model)
+    db.commit()

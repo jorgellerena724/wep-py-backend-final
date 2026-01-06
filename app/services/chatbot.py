@@ -1,17 +1,11 @@
-import json
+from datetime import datetime, timezone
 import logging
-import uuid
-from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple, Any
-from sqlmodel import Session, select, text
+from sqlmodel import Session, select
+from sqlalchemy.orm import selectinload
 from groq import Groq, BadRequestError, APIError
 
-from app.models.wep_chatbot_model import (
-    ChatbotConfig, 
-    ChatSession, 
-    ChatMessage,
-    ChatbotUsageStats
-)
+from app.models.wep_chatbot_model import ChatbotConfig, ChatbotModel, ChatbotUsage
 from app.config.config import settings
 
 logger = logging.getLogger(__name__)
@@ -24,431 +18,180 @@ class ChatbotServiceError(Exception):
 
 class ChatbotService:
     """
-    Servicio principal para manejar el chatbot multitenant.
-    
-    Responsabilidades:
-    1. Gestión de configuración por cliente
-    2. Creación y manejo de sesiones
-    3. Procesamiento de mensajes con Groq API
-    4. Persistencia de conversaciones
-    5. Limpieza automática de sesiones expiradas
+    Servicio simplificado para manejar el chatbot.
+    Solo procesa mensajes usando configuración de BD.
+    No gestiona sesiones - eso lo hace el frontend.
     """
     
     def __init__(self, db_session: Session):
-        logger.info(f"🚀 DEBUG: Inicializando ChatbotService para sesión: {id(db_session)}")
         self.db = db_session
-        self.groq_client = None
+        self.groq_clients = {}  # Cache de clientes Groq por usuario
+        logger.info("✅ ChatbotService inicializado")
+    
+    def _get_groq_client(self, user_id: int, api_key: str) -> Groq:
+        """
+        Obtiene o crea un cliente de Groq para un usuario específico.
+        """
         try:
-            self._initialize_groq_client()
-            logger.info("✅ DEBUG: ChatbotService inicializado exitosamente")
-        except Exception as e:
-            logger.error(f"❌ DEBUG: Error en inicialización del servicio: {str(e)}")
-            raise
-        
-    def _initialize_groq_client(self):
-        """Inicializa el cliente de Groq con la API key"""
-        try:
-            if not settings.GROQ_API_KEY:
-                raise ChatbotServiceError("GROQ_API_KEY no configurada en variables de entorno")
+            # Buscar en cache
+            if user_id in self.groq_clients:
+                return self.groq_clients[user_id]
             
-            self.groq_client = Groq(api_key=settings.GROQ_API_KEY)
-            logger.info("✅ Cliente Groq inicializado correctamente")
+            if not api_key:
+                raise ChatbotServiceError("API key de Groq no configurada")
+            
+            # Crear cliente de Groq
+            groq_client = Groq(api_key=api_key)
+            
+            # Guardar en cache
+            self.groq_clients[user_id] = groq_client
+            
+            logger.info(f"✅ Cliente Groq creado para usuario {user_id}")
+            return groq_client
             
         except Exception as e:
-            logger.error(f"❌ Error inicializando cliente Groq: {str(e)}")
+            logger.error(f"❌ Error creando cliente Groq: {str(e)}")
             raise ChatbotServiceError(f"No se pudo inicializar el cliente Groq: {str(e)}")
     
-    # ============================================
-    # MÉTODOS PARA CONFIGURACIÓN
-    # ============================================
-    
-    def get_tenant_config(self, user_id: str) -> ChatbotConfig:
+    def _get_user_config(self, user_id: int) -> Optional[ChatbotConfig]:
         """
-        Obtiene la configuración del chatbot para un tenant específico.
-        Si no existe, crea una configuración por defecto.
+        Obtiene la configuración del chatbot para un usuario desde la BD.
+        Usa selectinload para cargar el modelo relacionado.
         """
         try:
-            logger.info(f"🔍 DEBUG: Buscando configuración para user_id: {user_id}")
+            logger.info(f"🔍 Buscando configuración para user_id: {user_id}")
             
-            # Buscar configuración existente
+            # Asegurarse de que user_id es un entero
+            if not isinstance(user_id, int):
+                try:
+                    user_id = int(user_id)
+                except (ValueError, TypeError):
+                    logger.error(f"❌ user_id inválido: {user_id}")
+                    return None
+            
             config = self.db.exec(
-                select(ChatbotConfig).where(ChatbotConfig.user_id == user_id)
+                select(ChatbotConfig)
+                .options(selectinload(ChatbotConfig.model))
+                .where(ChatbotConfig.user_id == user_id)
             ).first()
             
-            logger.info(f"🔍 DEBUG: Configuración encontrada: {config is not None}")
-            
-            if not config:
-                logger.info(f"⚠️ DEBUG: No se encontró configuración, creando por defecto para {user_id}")
-                
-                # Crear configuración por defecto con campos que SÍ existen
-                config = ChatbotConfig(
-                    user_id=user_id,
-                    groq_api_key=settings.GROQ_API_KEY,  # Campo requerido que sí existe
-                    groq_model=settings.DEFAULT_GROQ_MODEL,
-                    prompt=(
-                        f"Eres el asistente virtual de {user_id.replace('_', ' ').title()}. "
-                        f"Sé amable, profesional y responde en español. "
-                        f"Si no sabes algo, dilo honestamente."
-                    ),
-                    temperature=settings.DEFAULT_TEMPERATURE,
-                    is_active=True,
-                    created_at=datetime.now(),
-                    updated_at=datetime.now()
-                )
-                
-                logger.info(f"✅ DEBUG: Configuración por defecto creada")
-                
-                self.db.add(config)
-                self.db.commit()
-                self.db.refresh(config)
-                logger.info(f"✅ Configuración por defecto creada para tenant: {user_id}")
+            if config:
+                logger.info(f"✅ Configuración encontrada - Modelo: {config.model.name if config.model else 'N/A'}")
+            else:
+                logger.warning(f"⚠️ No se encontró configuración para user_id: {user_id}")
             
             return config
             
         except Exception as e:
-            logger.error(f"❌ Error obteniendo configuración para {user_id}: {str(e)}")
-            raise ChatbotServiceError(f"No se pudo obtener la configuración: {str(e)}")
-    
-    def update_tenant_config(self, user_id: str, config_data: Dict[str, Any]) -> ChatbotConfig:
-        """
-        Actualiza la configuración del chatbot para un tenant.
-        """
-        try:
-            config = self.get_tenant_config(user_id)
-            
-            # Campos permitidos para actualizar
-            allowed_fields = [
-                'groq_model', 'prompt', 'temperature', 
-                'max_tokens', 'max_history', 'session_ttl_minutes',
-                'enable_history', 'company_name', 'company_description',
-                'contact_info', 'branding', 'welcome_message', 'is_active'
-            ]
-            
-            # Actualizar campos
-            for field, value in config_data.items():
-                if field in allowed_fields and value is not None:
-                    # Manejar campos JSON
-                    if field in ['contact_info', 'branding'] and isinstance(value, dict):
-                        setattr(config, field, json.dumps(value, ensure_ascii=False))
-                    else:
-                        setattr(config, field, value)
-            
-            config.updated_at = datetime.now()
-            self.db.add(config)
-            self.db.commit()
-            self.db.refresh(config)
-            
-            logger.info(f"✅ Configuración actualizada para tenant: {user_id}")
-            return config
-            
-        except Exception as e:
-            logger.error(f"❌ Error actualizando configuración para {user_id}: {str(e)}")
-            raise ChatbotServiceError(f"No se pudo actualizar la configuración: {str(e)}")
-    
-    # ============================================
-    # MÉTODOS PARA SESIONES
-    # ============================================
-    
-    def create_session(
-        self,
-        user_id: str,
-        user_identifier: Optional[str] = None,
-        user_ip: Optional[str] = None,
-        user_agent: Optional[str] = None,
-        page_url: Optional[str] = None,
-        metadata: Optional[Dict] = None
-    ) -> ChatSession:
-        """
-        Crea una nueva sesión de chat para un usuario final.
-        
-        Args:
-            user_id: ID del cliente/tenant
-            user_identifier: Identificador único del usuario (email, ID, etc.)
-            user_ip: Dirección IP del usuario
-            user_agent: User-Agent del navegador
-            page_url: URL de la página donde inició el chat
-            metadata: Metadatos adicionales en formato dict
-        
-        Returns:
-            ChatSession: Sesión creada
-        """
-        try:
-            # Obtener configuración para el TTL
-            config = self.get_tenant_config(user_id)
-            
-            # Generar clave única de sesión
-            session_key = f"{user_id}_{uuid.uuid4().hex[:12]}"
-            
-            # Calcular fecha de expiración
-            expires_at = datetime.now() + timedelta(minutes=config.session_ttl_minutes)
-            
-            # Crear sesión
-            session = ChatSession(
-                session_key=session_key,
-                user_id=user_id,
-                user_identifier=user_identifier,
-                user_ip=user_ip,
-                user_agent=user_agent,
-                page_url=page_url,
-                metadata=json.dumps(metadata) if metadata else None,
-                expires_at=expires_at,
-                is_active=True
-            )
-            
-            self.db.add(session)
-            self.db.commit()
-            self.db.refresh(session)
-            
-            # Actualizar estadísticas
-            self._update_usage_stats(user_id, sessions_increment=1)
-            
-            logger.info(f"✅ Nueva sesión creada: {session_key} para tenant: {user_id}")
-            return session
-            
-        except Exception as e:
-            logger.error(f"❌ Error creando sesión para {user_id}: {str(e)}")
-            raise ChatbotServiceError(f"No se pudo crear la sesión: {str(e)}")
-    
-    def get_active_session(self, session_key: str) -> Optional[ChatSession]:
-        """
-        Obtiene una sesión activa y no expirada.
-        Actualiza la última actividad automáticamente.
-        """
-        try:
-            session = self.db.exec(
-                select(ChatSession).where(
-                    ChatSession.session_key == session_key,
-                    ChatSession.is_active == True,
-                    ChatSession.expires_at > datetime.now()
-                )
-            ).first()
-            
-            if session:
-                # Actualizar última actividad
-                session.last_activity = datetime.now()
-                
-                # Extender expiración según configuración
-                config = self.get_tenant_config(session.user_id)
-                session.expires_at = datetime.now() + timedelta(minutes=config.session_ttl_minutes)
-                
-                self.db.add(session)
-                self.db.commit()
-            
-            return session
-            
-        except Exception as e:
-            logger.error(f"❌ Error obteniendo sesión {session_key}: {str(e)}")
+            logger.error(f"❌ Error obteniendo configuración: {str(e)}")
             return None
-    
-    def get_session_messages(
-        self, 
-        session_key: str, 
-        limit: Optional[int] = None
-    ) -> List[ChatMessage]:
-        """
-        Obtiene los mensajes de una sesión, ordenados cronológicamente.
-        """
-        try:
-            query = select(ChatMessage).where(
-                ChatMessage.session_key == session_key
-            ).order_by(ChatMessage.created_at.asc())
-            
-            if limit:
-                query = query.limit(limit)
-            
-            messages = self.db.exec(query).all()
-            return list(messages) if messages else []
-            
-        except Exception as e:
-            logger.error(f"❌ Error obteniendo mensajes para sesión {session_key}: {str(e)}")
-            return []
-    
-    def get_user_sessions(
-        self, 
-        user_id: str, 
-        user_identifier: str,
-        active_only: bool = True
-    ) -> List[ChatSession]:
-        """
-        Obtiene todas las sesiones de un usuario específico.
-        """
-        try:
-            query = select(ChatSession).where(
-                ChatSession.user_id == user_id,
-                ChatSession.user_identifier == user_identifier
-            )
-            
-            if active_only:
-                query = query.where(
-                    ChatSession.is_active == True,
-                    ChatSession.expires_at > datetime.now()
-                )
-            
-            query = query.order_by(ChatSession.created_at.desc())
-            
-            sessions = self.db.exec(query).all()
-            return list(sessions) if sessions else []
-            
-        except Exception as e:
-            logger.error(f"❌ Error obteniendo sesiones para usuario {user_identifier}: {str(e)}")
-            return []
-    
-    def close_session(self, session_key: str) -> bool:
-        """
-        Cierra una sesión (marca como inactiva).
-        """
-        try:
-            session = self.get_active_session(session_key)
-            if not session:
-                return False
-            
-            session.is_active = False
-            self.db.add(session)
-            self.db.commit()
-            
-            # Actualizar estadísticas
-            self._update_usage_stats(session.user_id, active_sessions_increment=-1)
-            
-            logger.info(f"✅ Sesión cerrada: {session_key}")
-            return True
-            
-        except Exception as e:
-            logger.error(f"❌ Error cerrando sesión {session_key}: {str(e)}")
-            return False
-    
-    def cleanup_expired_sessions(self) -> int:
-        """
-        Marca como inactivas todas las sesiones expiradas.
-        Devuelve el número de sesiones limpiadas.
-        """
-        try:
-            expired_sessions = self.db.exec(
-                select(ChatSession).where(
-                    ChatSession.is_active == True,
-                    ChatSession.expires_at <= datetime.now()
-                )
-            ).all()
-            
-            count = 0
-            for session in expired_sessions:
-                session.is_active = False
-                self.db.add(session)
-                count += 1
-            
-            if count > 0:
-                self.db.commit()
-                logger.info(f"🧹 {count} sesiones expiradas marcadas como inactivas")
-            
-            return count
-            
-        except Exception as e:
-            logger.error(f"❌ Error limpiando sesiones expiradas: {str(e)}")
-            return 0
-    
-    # ============================================
-    # MÉTODOS PARA PROCESAMIENTO DE MENSAJES
-    # ============================================
     
     def process_message(
         self,
-        user_id: str,
+        user_id: int,
         user_message: str,
         session_key: Optional[str] = None,
-        user_context: Optional[Dict[str, Any]] = None,
-        create_new_session: bool = True
+        conversation_history: Optional[List[Dict[str, str]]] = None
     ) -> Tuple[str, Dict[str, Any], str]:
         """
         Procesa un mensaje del usuario y devuelve la respuesta del chatbot.
         
         Args:
-            user_id: ID del cliente/tenant
+            user_id: ID del usuario (entero, obtenido del token o del owner)
             user_message: Mensaje del usuario
-            session_key: Clave de sesión existente (opcional)
-            user_context: Contexto adicional del usuario (opcional)
-            create_new_session: Crear nueva sesión si no existe
+            session_key: Clave de sesión (generada y manejada por el frontend)
+            conversation_history: Historial de conversación enviado por el frontend (opcional)
         
         Returns:
             tuple: (respuesta_ai, metadatos, session_key)
         """
-        logger.info(f"💬 DEBUG: Iniciando process_message para user_id: {user_id}, session_key: {session_key}")
+        logger.info(f"💬 Procesando mensaje para user_id: {user_id}")
+        
         try:
             # 1. Validar mensaje
             if not user_message or len(user_message.strip()) == 0:
                 raise ChatbotServiceError("El mensaje no puede estar vacío")
             
-            if len(user_message) > settings.MAX_MESSAGE_LENGTH:
-                user_message = user_message[:settings.MAX_MESSAGE_LENGTH]
-                logger.warning(f"⚠️ Mensaje truncado a {settings.MAX_MESSAGE_LENGTH} caracteres")
+            max_length = getattr(settings, 'MAX_MESSAGE_LENGTH', 2000)
+            if len(user_message) > max_length:
+                user_message = user_message[:max_length]
+                logger.warning(f"⚠️ Mensaje truncado a {max_length} caracteres")
             
-            # 2. Obtener o crear sesión
-            session = None
-            if session_key:
-                session = self.get_active_session(session_key)
+            # 2. Generar o mantener session_key (manejado por frontend)
+            if not session_key:
+                import uuid
+                session_key = f"session_{user_id}_{uuid.uuid4().hex[:8]}"
+                logger.info(f"🆕 Nueva sesión: {session_key}")
             
-            if not session and create_new_session:
-                session = self.create_session(
-                    user_id=user_id,
-                    user_identifier=user_context.get('email') if user_context else None
+            # 3. Obtener configuración del usuario (incluye modelo con selectinload)
+            config = self._get_user_config(user_id)
+            
+            if not config:
+                raise ChatbotServiceError(
+                    "No se encontró configuración de chatbot. "
+                    "Por favor, configura el chatbot desde el dashboard."
                 )
-                session_key = session.session_key
-            elif not session:
-                raise ChatbotServiceError("Sesión no encontrada o expirada")
-            else:
-                session_key = session.session_key
             
-            # 3. Obtener configuración del tenant
-            config = self.get_tenant_config(user_id)
+            if not config.status:
+                raise ChatbotServiceError("El chatbot está desactivado")
             
-            if not config.is_active:
-                raise ChatbotServiceError("El chatbot está desactivado para este cliente")
+            # 4. Verificar que el modelo está cargado
+            if not config.model:
+                raise ChatbotServiceError("Modelo de IA no encontrado en la configuración")
             
-            # 4. Construir mensajes para Groq
+            model_name = config.model.name
+            logger.info(f"🤖 Usando modelo: {model_name}")
+            
+            today = datetime.now(timezone.utc).date()
+            
+            usage_record = self.db.exec(
+                select(ChatbotUsage).where(
+                    ChatbotUsage.api_key == config.api_key,
+                    ChatbotUsage.model_id == config.model_id,
+                    ChatbotUsage.date == today
+                )
+            ).first()
+            
+            if not usage_record:
+                usage_record = ChatbotUsage(
+                    user_id=user_id,
+                    api_key=config.api_key,
+                    model_id=config.model.id,
+                    date=today,
+                    tokens_used=0
+                )
+                self.db.add(usage_record)
+                self.db.commit()
+                self.db.refresh(usage_record)
+
+            # Cargamos el modelo para ver su límite
+            model_limit = config.model.daily_token_limit
+            
+            if usage_record.tokens_used >= model_limit:
+                raise ChatbotServiceError(f"Límite diario excedido para el modelo {config.model.name}")
+            
+            # 5. Construir mensajes para Groq
             messages = self._build_groq_messages(
                 config=config,
-                session_key=session_key,
-                user_context=user_context,
-                user_message=user_message
+                user_message=user_message,
+                conversation_history=conversation_history
             )
             
-            # 5. Llamar a Groq API
+            # 6. Llamar a Groq API
             ai_response, usage_info = self._call_groq_api(
+                user_id=user_id,
+                api_key=config.api_key,
                 messages=messages,
-                config=config
+                config=config,
+                model_name=model_name
             )
             
-            # 6. Guardar mensajes en la base de datos
-            if config.enable_history:
-                self._save_message(
-                    session_key=session_key,
-                    role="user",
-                    content=user_message,
-                    model_used=None,
-                    tokens=usage_info.get('prompt_tokens')
-                )
-                
-                self._save_message(
-                    session_key=session_key,
-                    role="assistant",
-                    content=ai_response,
-                    model_used=config.groq_model,
-                    tokens=usage_info.get('completion_tokens')
-                )
-            
-            # 7. Actualizar contador de mensajes en la sesión
-            session.message_count += 1
-            self.db.add(session)
+            usage_record.tokens_used += usage_info.get('total_tokens', 0)
+            self.db.add(usage_record)
             self.db.commit()
             
-            # 8. Actualizar estadísticas
-            self._update_usage_stats(
-                user_id=user_id,
-                messages_increment=1,
-                tokens_increment=usage_info.get('total_tokens', 0)
-            )
-            
             logger.info(
-                f"✅ Mensaje procesado - Tenant: {user_id}, "
-                f"Sesión: {session_key[:10]}..., "
+                f"✅ Mensaje procesado - Usuario: {user_id}, "
                 f"Tokens: {usage_info.get('total_tokens', 0)}"
             )
             
@@ -463,79 +206,66 @@ class ChatbotService:
         except ChatbotServiceError:
             raise
         except Exception as e:
-            logger.error(f"❌ Error inesperado procesando mensaje: {str(e)}")
+            logger.error(f"❌ Error inesperado: {str(e)}", exc_info=True)
             raise ChatbotServiceError(f"Error interno del servidor: {str(e)}")
     
     def _build_groq_messages(
         self,
         config: ChatbotConfig,
-        session_key: str,
-        user_context: Optional[Dict[str, Any]],
-        user_message: str
+        user_message: str,
+        conversation_history: Optional[List[Dict[str, str]]] = None
     ) -> List[Dict[str, str]]:
         """
         Construye la lista de mensajes para enviar a Groq API.
+        El historial viene del frontend si lo envía.
         """
         messages = []
         
-        # 1. Prompt del sistema
-        prompt = config.prompt
-        
-        # Agregar información de la empresa si existe
-        if config.company_name:
-            prompt += f"\n\nEmpresa: {config.company_name}"
-        
-        if config.company_description:
-            prompt += f"\nDescripción: {config.company_description}"
-        
+        # 1. Prompt del sistema (desde BD)
         messages.append({
             "role": "system",
-            "content": prompt
+            "content": config.prompt
         })
         
-        # 2. Contexto del usuario (opcional)
-        if user_context:
-            context_str = json.dumps(user_context, ensure_ascii=False)
-            messages.append({
-                "role": "system",
-                "content": f"Contexto del usuario actual: {context_str}"
-            })
+        # 2. Historial de conversación (si el frontend lo envía)
+        if conversation_history:
+            messages.extend(conversation_history)
         
-        # 3. Historial de conversación
-        if config.enable_history and config.max_history > 0:
-            history_messages = self.get_session_messages(
-                session_key=session_key,
-                limit=config.max_history
-            )
-            
-            for msg in history_messages:
-                messages.append({
-                    "role": msg.role,
-                    "content": msg.content
-                })
-        
-        # 4. Mensaje actual del usuario
+        # 3. Mensaje actual del usuario
         messages.append({
             "role": "user",
             "content": user_message
         })
         
+        logger.info(f"📝 Construidos {len(messages)} mensajes para Groq")
+        
         return messages
     
     def _call_groq_api(
-        self, 
+        self,
+        user_id: int,
+        api_key: str,
         messages: List[Dict[str, str]], 
-        config: ChatbotConfig
+        config: ChatbotConfig,
+        model_name: str
     ) -> Tuple[str, Dict[str, Any]]:
         """
-        Llama a la API de Groq y devuelve la respuesta.
+        Llama a la API de Groq usando la configuración del usuario.
         """
         try:
-            response = self.groq_client.chat.completions.create(
+            # Obtener cliente de Groq
+            groq_client = self._get_groq_client(user_id, api_key)
+            
+            # Preparar parámetros
+            max_tokens = getattr(config, 'max_tokens', 1000)
+            
+            logger.info(f"🚀 Llamando a Groq API - Modelo: {model_name}, Temp: {config.temperature}")
+            
+            response = groq_client.chat.completions.create(
                 messages=messages,
-                model=config.groq_model,
+                model=model_name,
                 temperature=config.temperature,
-                max_tokens=config.max_tokens,
+                max_tokens=max_tokens,
                 stream=False
             )
             
@@ -545,181 +275,58 @@ class ChatbotService:
                 "prompt_tokens": response.usage.prompt_tokens,
                 "completion_tokens": response.usage.completion_tokens,
                 "total_tokens": response.usage.total_tokens,
-                "model": config.groq_model,
+                "model": model_name,
                 "temperature": config.temperature
             }
+            
+            logger.info(f"✅ Respuesta de Groq recibida - Tokens: {usage_info['total_tokens']}")
             
             return ai_response, usage_info
             
         except BadRequestError as e:
-            # Intentar con modelo por defecto si falla el específico
-            if config.groq_model != settings.DEFAULT_GROQ_MODEL:
-                logger.warning(f"⚠️ Modelo {config.groq_model} falló, intentando con modelo por defecto")
-                config.groq_model = settings.DEFAULT_GROQ_MODEL
-                return self._call_groq_api(messages, config)
-            else:
-                raise
-    
-    def _save_message(
-        self,
-        session_key: str,
-        role: str,
-        content: str,
-        model_used: Optional[str] = None,
-        tokens: Optional[int] = None
-    ):
-        """
-        Guarda un mensaje en la base de datos.
-        """
-        try:
-            # Obtener orden del mensaje
-            last_order = self.db.exec(
-                select(ChatMessage.message_order)
-                .where(ChatMessage.session_key == session_key)
-                .order_by(ChatMessage.message_order.desc())
-                .limit(1)
-            ).first()
+            error_msg = str(e)
+            logger.error(f"❌ BadRequestError de Groq: {error_msg}")
             
-            next_order = (last_order or 0) + 1
-            
-            message = ChatMessage(
-                session_key=session_key,
-                role=role,
-                content=content,
-                tokens=tokens,
-                model_used=model_used,
-                message_order=next_order
-            )
-            
-            self.db.add(message)
-            self.db.commit()
-            
-        except Exception as e:
-            logger.error(f"❌ Error guardando mensaje: {str(e)}")
-            # No lanzamos excepción para no interrumpir el flujo principal
-    
-    # ============================================
-    # MÉTODOS PARA ESTADÍSTICAS
-    # ============================================
-    
-    def _update_usage_stats(
-        self,
-        user_id: str,
-        sessions_increment: int = 0,
-        active_sessions_increment: int = 0,
-        messages_increment: int = 0,
-        tokens_increment: int = 0
-    ):
-        """
-        Actualiza las estadísticas de uso del chatbot.
-        """
-        if not settings.ENABLE_ANALYTICS:
-            return
-        
-        try:
-            today = datetime.now().strftime("%Y-%m-%d")
-            
-            # Buscar registro existente para hoy
-            stats = self.db.exec(
-                select(ChatbotUsageStats).where(
-                    ChatbotUsageStats.user_id == user_id,
-                    ChatbotUsageStats.date == today
-                )
-            ).first()
-            
-            if not stats:
-                # Crear nuevo registro
-                stats = ChatbotUsageStats(
-                    user_id=user_id,
-                    date=today,
-                    total_sessions=max(sessions_increment, 0),
-                    active_sessions=max(active_sessions_increment, 0),
-                    total_messages=max(messages_increment, 0),
-                    total_tokens=max(tokens_increment, 0)
+            # Proporcionar mensajes más específicos
+            if "model" in error_msg.lower():
+                raise ChatbotServiceError(
+                    f"El modelo '{model_name}' no es válido. "
+                    f"Modelos disponibles: llama-3.3-70b-versatile, llama-3.1-70b-versatile, "
+                    f"llama-3.1-8b-instant, mixtral-8x7b-32768"
                 )
             else:
-                # Actualizar registro existente
-                stats.total_sessions += sessions_increment
-                stats.active_sessions += active_sessions_increment
-                stats.total_messages += messages_increment
-                stats.total_tokens += tokens_increment
-                stats.updated_at = datetime.now()
+                raise ChatbotServiceError(f"Error en la solicitud a Groq: {error_msg}")
+                
+        except APIError as e:
+            error_msg = str(e)
+            logger.error(f"❌ APIError de Groq: {error_msg}")
             
-            self.db.add(stats)
-            self.db.commit()
-            
-        except Exception as e:
-            logger.error(f"❌ Error actualizando estadísticas: {str(e)}")
-            # Silencioso - no debe interrumpir el flujo principal
-    
-    def get_usage_stats(
-        self, 
-        user_id: str, 
-        start_date: Optional[str] = None,
-        end_date: Optional[str] = None
-    ) -> List[ChatbotUsageStats]:
-        """
-        Obtiene estadísticas de uso para un tenant.
-        """
-        try:
-            query = select(ChatbotUsageStats).where(
-                ChatbotUsageStats.user_id == user_id
-            )
-            
-            if start_date:
-                query = query.where(ChatbotUsageStats.date >= start_date)
-            
-            if end_date:
-                query = query.where(ChatbotUsageStats.date <= end_date)
-            
-            query = query.order_by(ChatbotUsageStats.date.desc())
-            
-            stats = self.db.exec(query).all()
-            return list(stats) if stats else []
-            
-        except Exception as e:
-            logger.error(f"❌ Error obteniendo estadísticas para {user_id}: {str(e)}")
-            return []
-    
-    # ============================================
-    # MÉTODOS AUXILIARES
-    # ============================================
-    
-    def get_welcome_message(self, user_id: str) -> str:
-        """
-        Obtiene el mensaje de bienvenida personalizado para un tenant.
-        """
-        try:
-            config = self.get_tenant_config(user_id)
-            return config.welcome_message or "¡Hola! ¿En qué puedo ayudarte?"
-            
-        except Exception as e:
-            logger.error(f"❌ Error obteniendo mensaje de bienvenida: {str(e)}")
-            return "¡Hola! ¿En qué puedo ayudarte?"
-    
-    def validate_tenant_access(self, user_id: str, session_key: str) -> bool:
-        """
-        Valida que una sesión pertenezca a un tenant específico.
-        """
-        try:
-            session = self.db.exec(
-                select(ChatSession).where(
-                    ChatSession.session_key == session_key,
-                    ChatSession.user_id == user_id
+            # Error 403 = API key inválida o sin permisos
+            if "403" in error_msg or "Forbidden" in error_msg:
+                # Limpiar cache del cliente Groq para este usuario
+                if user_id in self.groq_clients:
+                    del self.groq_clients[user_id]
+                    logger.info(f"🗑️ Cache de cliente Groq limpiado para usuario {user_id}")
+                
+                raise ChatbotServiceError(
+                    "API key de Groq inválida o sin permisos. "
+                    "Por favor, verifica tu API key en la configuración del chatbot. "
+                    "Obtén una nueva en: https://console.groq.com/keys"
                 )
-            ).first()
-            
-            return session is not None
-            
+            # Error 429 = Rate limit
+            elif "429" in error_msg or "rate" in error_msg.lower():
+                raise ChatbotServiceError(
+                    "Has excedido el límite de solicitudes de Groq. "
+                    "Por favor, intenta de nuevo en unos momentos."
+                )
+            else:
+                raise ChatbotServiceError(f"Error de comunicación con Groq API: {error_msg}")
+                
         except Exception as e:
-            logger.error(f"❌ Error validando acceso: {str(e)}")
-            return False
+            logger.error(f"❌ Error inesperado llamando a Groq API: {str(e)}")
+            raise ChatbotServiceError(f"Error inesperado al comunicarse con Groq: {str(e)}")
 
 
-# Factory para crear instancias del servicio
 def get_chatbot_service(db_session: Session) -> ChatbotService:
-    """
-    Factory function para obtener una instancia del servicio.
-    Útil para inyección de dependencias.
-    """
+    """Factory function para obtener una instancia del servicio."""
     return ChatbotService(db_session)

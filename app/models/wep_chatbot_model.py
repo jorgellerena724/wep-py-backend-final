@@ -1,6 +1,6 @@
-from sqlmodel import Column, Relationship, SQLModel, Field, Text
+from sqlmodel import Column, Relationship, SQLModel, Field, Text, UniqueConstraint
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Optional, Dict, Any
+from typing import TYPE_CHECKING, List, Optional
 from app.config.config import settings
 
 if TYPE_CHECKING:
@@ -18,9 +18,11 @@ class ChatbotModel(SQLModel, table=True):
     name: str = Field(unique=True, index=True)
     provider: str = Field(nullable=False)
     status: bool = Field(default=True)
+    daily_token_limit: int = Field(default=100000, nullable=False)
     
     # Relación inversa
-    configs: list["ChatbotConfig"] = Relationship(back_populates="model")
+    configs: List["ChatbotConfig"] = Relationship(back_populates="model")
+    usages: List["ChatbotUsage"] = Relationship(back_populates="model")
 
 class ChatbotConfig(SQLModel, table=True):
     """
@@ -64,137 +66,32 @@ class ChatbotConfig(SQLModel, table=True):
         back_populates="configs",
         sa_relationship_kwargs={"lazy": "joined"}
     )
-
-class ChatSession(SQLModel, table=True):
+    
+class ChatbotUsage(SQLModel, table=True):
     """
-    Sesión de chat para cada usuario final.
-    Se crea una por cada usuario que interactúa con el chatbot.
+    Registra el consumo diario POR API_KEY y POR MODELO.
+    Esto refleja el límite REAL de Groq.
     """
-    if settings.USE_SQLITE:
-        __tablename__ = "chat_sessions"
-    else:
-        __tablename__ = "chat_sessions"
-        __table_args__ = {"schema": "public"}
-    
-    id: Optional[int] = Field(default=None, primary_key=True)
-    
-    # Identificación
-    session_key: str = Field(unique=True, index=True, description="Clave única de la sesión")
-    tenant_id: str = Field(index=True, description="ID del cliente/tenant")
-    
-    # Información del usuario final
-    user_identifier: Optional[str] = Field(default=None, description="Identificador del usuario (email, ID, etc.)")
-    user_ip: Optional[str] = Field(default=None, description="Dirección IP del usuario")
-    user_agent: Optional[str] = Field(default=None, description="User-Agent del navegador")
-    page_url: Optional[str] = Field(default=None, description="URL de la página donde inició el chat")
-    
-    # Metadatos de la sesión
-    message_count: int = Field(default=0, description="Número total de mensajes en la sesión")
-    is_active: bool = Field(default=True, description="Sesión activa/inactiva")
-    
-    # Tiempos
-    created_at: datetime = Field(default_factory=datetime.now)
-    last_activity: datetime = Field(default_factory=datetime.now)
-    expires_at: datetime = Field(
-        default_factory=lambda: datetime.now(),
-        description="Fecha de expiración de la sesión"
+    __tablename__ = "chatbot_usage"
+    __table_args__ = (
+        # ✅ CAMBIO: El constraint debe ser por API_KEY + MODELO + FECHA
+        UniqueConstraint("api_key", "model_id", "date", 
+                        name="unique_usage_per_apikey_model_day"),
+        {"schema": "public"}
     )
     
-    # Datos adicionales (opcional)
-    meta_data: Optional[str] = Field(default=None, description="Metadatos adicionales en JSON")
-
-
-class ChatMessage(SQLModel, table=True):
-    """
-    Mensaje individual de una conversación.
-    Se relaciona con una sesión específica.
-    """
-    if settings.USE_SQLITE:
-        __tablename__ = "chat_messages"
-    else:
-        __tablename__ = "chat_messages"
-        __table_args__ = {"schema": "public"}
-    
-    id: Optional[int] = Field(default=None, primary_key=True)
-    
-    # Relación con la sesión
-    session_key: str = Field(
-        foreign_key="public.chat_sessions.session_key",
-        index=True,
-        description="Clave de la sesión a la que pertenece"
+    id: Optional[int] = Field(
+        default=None, 
+        primary_key=True,
+        sa_column_kwargs={"autoincrement": True}
     )
     
-    # Contenido del mensaje
-    role: str = Field(description="Rol: 'user', 'assistant' o 'system'")
-    content: str = Field(description="Contenido del mensaje")
+    user_id: int = Field(foreign_key="public.user2.id", index=True)
     
-    # Metadatos del mensaje
-    tokens: Optional[int] = Field(default=None, description="Tokens utilizados")
-    model_used: Optional[str] = Field(default=None, description="Modelo usado para generar la respuesta")
+    api_key: str = Field(index=True, nullable=False)
     
-    # Tiempo
-    created_at: datetime = Field(default_factory=datetime.now)
+    model_id: int = Field(foreign_key="public.chatbot_model.id", nullable=False)
+    date: datetime = Field(default_factory=lambda: datetime.now(timezone.utc).date())
+    tokens_used: int = Field(default=0)
     
-    # Orden en la conversación
-    message_order: int = Field(default=0, description="Orden del mensaje en la conversación")
-
-
-class ChatbotUsageStats(SQLModel, table=True):
-    """
-    Estadísticas de uso del chatbot por cliente.
-    Opcional: para monitoreo y facturación.
-    """
-    if settings.USE_SQLITE:
-        __tablename__ = "chatbot_usage_stats"
-    else:
-        __tablename__ = "chatbot_usage_stats"
-        __table_args__ = {"schema": "public"}
-    
-    id: Optional[int] = Field(default=None, primary_key=True)
-    
-    # Identificación
-    tenant_id: str = Field(index=True, description="ID del cliente/tenant")
-    date: str = Field(index=True, description="Fecha en formato YYYY-MM-DD")
-    
-    # Contadores
-    total_sessions: int = Field(default=0, description="Total de sesiones creadas")
-    active_sessions: int = Field(default=0, description="Sesiones activas")
-    total_messages: int = Field(default=0, description="Total de mensajes procesados")
-    total_tokens: int = Field(default=0, description="Total de tokens consumidos")
-    
-    # Costos estimados (opcional)
-    estimated_cost: float = Field(default=0.0, description="Costo estimado en USD")
-    
-    # Tiempo
-    updated_at: datetime = Field(default_factory=datetime.now)
-
-
-# Modelos Pydantic para requests/responses
-from pydantic import BaseModel
-from typing import Dict, Any, Optional as Opt
-
-class ChatRequest(BaseModel):
-    """Modelo para peticiones de chat"""
-    message: str
-    session_key: Opt[str] = None
-    user_context: Opt[Dict[str, Any]] = None
-    reset_conversation: bool = False
-
-class ChatResponse(BaseModel):
-    """Modelo para respuestas del chatbot"""
-    response: str
-    session_key: str
-    model_used: Opt[str] = None
-    usage: Opt[Dict[str, int]] = None
-    suggestions: Opt[list] = None
-    timestamp: datetime = datetime.now()
-
-class SessionInfo(BaseModel):
-    """Información de una sesión"""
-    session_key: str
-    tenant_id: str
-    created_at: datetime
-    last_activity: datetime
-    expires_at: datetime
-    message_count: int
-    is_active: bool
+    model: ChatbotModel = Relationship(back_populates="usages")
