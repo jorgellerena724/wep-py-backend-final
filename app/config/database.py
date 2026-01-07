@@ -1,3 +1,4 @@
+import json
 from sqlmodel import SQLModel, create_engine, Session, text
 from typing import Generator
 from passlib.context import CryptContext
@@ -5,6 +6,15 @@ from app.config.config import settings
 import logging
 import re
 
+
+DEFAULT_SOCIAL_NETWORKS = [
+    {"network": "whatsapp", "url": "https://wa.me/", "username": "", "active": False},
+    {"network": "facebook", "url": "https://facebook.com/", "username": "", "active": False},
+    {"network": "instagram", "url": "https://instagram.com/", "username": "", "active": False},
+    {"network": "tiktok", "url": "https://tiktok.com/@", "username": "", "active": False},
+    {"network": "x", "url": "https://x.com/", "username": "", "active": False},
+    {"network": "telegram", "url": "https://t.me/", "username": "", "active": False},
+]
 
 # Configuración de logging
 logging.basicConfig(level=logging.INFO)
@@ -481,23 +491,23 @@ def create_initial_contact():
                 if is_sqlite:
                     session.exec(
                         text("""
-                            INSERT INTO contact (email, phone, address)
-                            VALUES (:email, :phone, :address)
+                            INSERT INTO contact (email, address, social_networks)
+                            VALUES (:email, :address, :social_networks)
                         """).bindparams(
                             email="example@email.com",
-                            phone="+7 234 1234",
-                            address=None
+                            address=None,
+                            social_networks=json.dumps(DEFAULT_SOCIAL_NETWORKS)
                         )
                     )
                 else:
                     session.exec(
                         text("""
-                            INSERT INTO public.contact (email, phone, address)
-                            VALUES (:email, :phone, :address)
+                            INSERT INTO public.contact (email, address, social_networks)
+                            VALUES (:email, :address, :social_networks)
                         """).bindparams(
                             email="example@email.com",
-                            phone="+7 234 1234",
-                            address=None
+                            address=None,
+                            social_networks=json.dumps(DEFAULT_SOCIAL_NETWORKS)
                         )
                     )
                 session.commit()

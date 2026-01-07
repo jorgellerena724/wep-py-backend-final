@@ -1,6 +1,6 @@
-from typing import List, Optional
+from typing import Optional
 from pydantic_settings import BaseSettings
-from pydantic import Field, PostgresDsn, field_validator, ConfigDict
+from pydantic import Field, field_validator, ConfigDict
 from dotenv import load_dotenv
 import os
 from pathlib import Path
@@ -9,7 +9,6 @@ load_dotenv(override=True)
 
 if os.path.exists(".env"):
     load_dotenv(dotenv_path=".env", encoding="latin-1")
-
 
 class Settings(BaseSettings):
     """
