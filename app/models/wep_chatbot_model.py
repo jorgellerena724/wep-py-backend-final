@@ -91,7 +91,7 @@ class ChatbotUsage(SQLModel, table=True):
     api_key: str = Field(index=True, nullable=False)
     
     model_id: int = Field(foreign_key="public.chatbot_model.id", nullable=False)
-    date: datetime = Field(default_factory=lambda: datetime.now(timezone.utc).date())
+    date: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     tokens_used: int = Field(default=0)
     
     model: ChatbotModel = Relationship(back_populates="usages")

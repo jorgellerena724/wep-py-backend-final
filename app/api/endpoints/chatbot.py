@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 from sqlalchemy.orm import selectinload
 from typing import Any, Dict, Optional, List
 from fastapi import APIRouter, Depends, HTTPException, Response, status
-from sqlmodel import SQLModel, Session, select
+from sqlmodel import SQLModel, Session, func, select
 import hashlib
 from app.api.endpoints.user import UserResponse
 from app.models.wep_chatbot_model import (
@@ -77,13 +77,9 @@ class ChatbotConfigResponse(SQLModel):
     prompt: str
     temperature: float
     status: bool
-    created_at: datetime
-    updated_at: datetime
-    
     tokens_used_today: int = 0
     tokens_limit: int
     tokens_remaining: int
-    usage_percentage: float
 
 # Crear router
 router = APIRouter()
@@ -104,19 +100,17 @@ def _calculate_token_usage(
         select(ChatbotUsage).where(
             ChatbotUsage.api_key == api_key,
             ChatbotUsage.model_id == model_id,
-            ChatbotUsage.date == today
+            func.date(ChatbotUsage.date) == today
         )
     ).first()
     
     tokens_used = usage_record.tokens_used if usage_record else 0
     tokens_remaining = max(0, daily_token_limit - tokens_used)
-    usage_percentage = (tokens_used / daily_token_limit * 100) if daily_token_limit > 0 else 0
     
     return {
         "tokens_used_today": tokens_used,
         "tokens_limit": daily_token_limit,
-        "tokens_remaining": tokens_remaining,
-        "usage_percentage": round(usage_percentage, 2)
+        "tokens_remaining": tokens_remaining
     }
 
 # ============================================
@@ -488,7 +482,7 @@ async def update_config(
         db.commit()
         db.merge(config)
         
-        return config
+        return Response(status_code=status.HTTP_200_OK)
         
     except HTTPException:
         raise

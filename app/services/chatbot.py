@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 import logging
 from typing import Dict, List, Optional, Tuple, Any
-from sqlmodel import Session, select
+from sqlmodel import Session, func, select
 from sqlalchemy.orm import selectinload
 from groq import Groq, BadRequestError, APIError
 
@@ -142,13 +142,14 @@ class ChatbotService:
             model_name = config.model.name
             logger.info(f"🤖 Usando modelo: {model_name}")
             
-            today = datetime.now(timezone.utc).date()
+            today_date = datetime.now(timezone.utc).date()
+            today_datetime = datetime.combine(today_date, datetime.min.time())
             
             usage_record = self.db.exec(
                 select(ChatbotUsage).where(
                     ChatbotUsage.api_key == config.api_key,
                     ChatbotUsage.model_id == config.model_id,
-                    ChatbotUsage.date == today
+                    func.date(ChatbotUsage.date) == today_date
                 )
             ).first()
             
@@ -157,7 +158,7 @@ class ChatbotService:
                     user_id=user_id,
                     api_key=config.api_key,
                     model_id=config.model.id,
-                    date=today,
+                    date=today_datetime,
                     tokens_used=0
                 )
                 self.db.add(usage_record)
@@ -187,6 +188,7 @@ class ChatbotService:
             )
             
             usage_record.tokens_used += usage_info.get('total_tokens', 0)
+            usage_record.date = today_datetime
             self.db.add(usage_record)
             self.db.commit()
             
