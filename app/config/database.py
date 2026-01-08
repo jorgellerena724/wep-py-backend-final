@@ -621,7 +621,7 @@ def get_all_tables_except_user():
                     SELECT name 
                     FROM sqlite_master 
                     WHERE type = 'table'
-                    AND name NOT IN ('user2', 'active_sessions', 'google_calendar_tokens,'chatbot_config', 'chat_sessions', 'chat_messages', 'chatbot_usage_stats')
+                    AND name NOT IN ('user2', 'active_sessions', 'chatbot_config', 'chatbot_usage', 'chatbot_model')
                     ORDER BY name
                 """))
                 tables = [row[0] for row in result.fetchall()]
@@ -631,7 +631,7 @@ def get_all_tables_except_user():
                     FROM information_schema.tables 
                     WHERE table_schema = 'public' 
                     AND table_type = 'BASE TABLE'
-                    AND table_name NOT IN ('user2', 'active_sessions', 'google_calendar_tokens','chatbot_config', 'chat_sessions', 'chat_messages', 'chatbot_usage_stats')
+                    AND table_name NOT IN ('user2', 'active_sessions','chatbot_config', 'chatbot_usage', 'chatbot_model')
                     ORDER BY table_name
                 """))
                 tables = [row[0] for row in result.fetchall()]
@@ -1024,42 +1024,3 @@ def migrate_all_tenant_schemas():
     except Exception as e:
         logger.error(f"❌ Error en migración masiva: {e}")
         raise
-
-# =============================================================================
-# FUNCIÓN PRINCIPAL PARA CREAR TENANT CUANDO SE REGISTRA UN NUEVO USUARIO
-# =============================================================================
-
-def setup_new_tenant(client_name: str):
-    """
-    Función principal para configurar un nuevo tenant cuando se crea un usuario.
-    Esta función debe ser llamada desde el endpoint de registro de usuarios.
-    """
-    if not client_name or client_name.strip() == "":
-        return False
-        
-    client_name = client_name.strip().lower()
-    
-    try:
-        # Para SQLite, simplemente creamos datos iniciales
-        if is_sqlite:
-            logger.info(f"⏭️ SQLite: No se configura multitenant para '{client_name}'")
-            return True
-        
-        # Para PostgreSQL, crear esquema completo
-        with Session(engine) as session:
-            schema_exists = session.exec(text("""
-                SELECT EXISTS (
-                    SELECT FROM information_schema.schemata 
-                    WHERE schema_name = :schema_name
-                )
-            """).bindparams(schema_name=client_name)).scalar()
-            
-            if schema_exists:
-                migrate_existing_tenant_schema(client_name)
-            else:
-                create_tenant_schema(client_name)
-        return True
-        
-    except Exception as e:
-        logger.error(f"❌ Error al configurar tenant '{client_name}': {e}")
-        return False

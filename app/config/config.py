@@ -41,52 +41,6 @@ class Settings(BaseSettings):
     
     
     # ============================================
-    # CONFIGURACIÓN DEL CHATBOT
-    # ============================================
-    GROQ_API_KEY: str = Field(..., env="GROQ_API_KEY")
-    
-    # Configuración por defecto para nuevos clientes
-    DEFAULT_GROQ_MODEL: str = Field("llama-3.3-70b-versatile", env="DEFAULT_GROQ_MODEL")
-    DEFAULT_TEMPERATURE: float = Field(0.7, env="DEFAULT_TEMPERATURE")
-    DEFAULT_MAX_TOKENS: int = Field(500, env="DEFAULT_MAX_TOKENS")
-    DEFAULT_SESSION_TTL_MINUTES: int = Field(30, env="DEFAULT_SESSION_TTL_MINUTES")
-    DEFAULT_MAX_HISTORY: int = Field(10, env="DEFAULT_MAX_HISTORY")
-    
-    # Límites de seguridad
-    MAX_MESSAGE_LENGTH: int = Field(2000, env="MAX_MESSAGE_LENGTH")
-    MAX_SESSIONS_PER_USER: int = Field(5, env="MAX_SESSIONS_PER_USER")
-    MAX_TOKENS_PER_REQUEST: int = Field(2000, env="MAX_TOKENS_PER_REQUEST")
-    
-    # Intervalos de mantenimiento
-    CLEANUP_INTERVAL_MINUTES: int = Field(60, env="CLEANUP_INTERVAL_MINUTES")
-    STATS_UPDATE_INTERVAL_MINUTES: int = Field(5, env="STATS_UPDATE_INTERVAL_MINUTES")
-    
-    # Características habilitadas/deshabilitadas
-    ENABLE_STREAMING: bool = Field(False, env="ENABLE_STREAMING")
-    ENABLE_SUGGESTIONS: bool = Field(True, env="ENABLE_SUGGESTIONS")
-    ENABLE_ANALYTICS: bool = Field(True, env="ENABLE_ANALYTICS")
-    ENABLE_HISTORY: bool = Field(True, env="ENABLE_HISTORY")
-    
-    # Configuración de respuesta de error
-    SHOW_DETAILED_ERRORS: bool = Field(False, env="SHOW_DETAILED_ERRORS")
-    FALLBACK_RESPONSE: str = Field(
-        "Lo siento, estoy teniendo dificultades técnicas en este momento. Por favor, intenta de nuevo más tarde.",
-        env="FALLBACK_RESPONSE"
-    )
-    
-    # Configuración de logs
-    LOG_LEVEL: str = Field("INFO", env="LOG_LEVEL")
-    LOG_REQUESTS: bool = Field(True, env="LOG_REQUESTS")
-    
-    # Tiempos de espera
-    GROQ_TIMEOUT_SECONDS: int = Field(30, env="GROQ_TIMEOUT_SECONDS")
-    DB_TIMEOUT_SECONDS: int = Field(10, env="DB_TIMEOUT_SECONDS")
-    
-    # Configuración de cache (opcional)
-    ENABLE_CACHE: bool = Field(False, env="ENABLE_CACHE")
-    CACHE_TTL_SECONDS: int = Field(300, env="CACHE_TTL_SECONDS")
-    
-    # ============================================
     # VALIDACIONES
     # ============================================
     
@@ -110,20 +64,6 @@ class Settings(BaseSettings):
         sqlite_path.parent.mkdir(parents=True, exist_ok=True)
         return str(sqlite_path)
     
-    @field_validator('DEFAULT_TEMPERATURE')
-    @classmethod
-    def validate_temperature(cls, v: float) -> float:
-        if not 0.0 <= v <= 2.0:
-            raise ValueError("DEFAULT_TEMPERATURE debe estar entre 0.0 y 2.0")
-        return v
-    
-    @field_validator('DEFAULT_MAX_TOKENS', 'MAX_TOKENS_PER_REQUEST')
-    @classmethod
-    def validate_positive_integer(cls, v: int) -> int:
-        if v <= 0:
-            raise ValueError("El valor debe ser mayor a 0")
-        return v
-
     def get_database_url(self) -> str:
         """Retorna la URL de base de datos según la configuración"""
         if self.USE_SQLITE:
@@ -131,16 +71,6 @@ class Settings(BaseSettings):
         else:
             # Aseguramos que use 'postgresql://' en lugar de 'postgres://'
             return self.WEP_DATABASE_URL.replace("postgres://", "postgresql://", 1)
-    
-    def validate_chatbot_config(self):
-        """Valida la configuración específica del chatbot"""
-        if not self.GROQ_API_KEY:
-            raise ValueError("GROQ_API_KEY es requerida para el chatbot")
-        
-        if self.DEFAULT_SESSION_TTL_MINUTES <= 0:
-            raise ValueError("DEFAULT_SESSION_TTL_MINUTES debe ser mayor a 0")
-        
-        return True
     
     # Configuración de Pydantic
     model_config = ConfigDict(
@@ -153,11 +83,3 @@ class Settings(BaseSettings):
 
 # Instancia global de configuración
 settings = Settings()
-
-# Validar configuración del chatbot al iniciar
-try:
-    settings.validate_chatbot_config()
-    print("✅ Configuración del chatbot validada correctamente")
-except ValueError as e:
-    print(f"❌ Error en configuración del chatbot: {e}")
-    raise
