@@ -76,5 +76,23 @@ async def update_contact(
         )
         
 @router.get("/", response_model=list[WepContactModel])
-def get_contact( current_user: WepUserModel = Depends(verify_token), db: Session = Depends(get_tenant_session)):
-    return db.exec(select(WepContactModel).order_by(WepContactModel.id)).all()
+def get_contact(
+    current_user: WepUserModel = Depends(verify_token),
+    db: Session = Depends(get_tenant_session)
+):
+    source = getattr(current_user, 'source', 'unknown')
+    
+    if source == "website":
+        # Para website, filtrar solo redes sociales activas
+        contacts = db.exec(select(WepContactModel)).all()
+        for contact in contacts:
+            if contact.social_networks:
+                # Filtrar solo redes sociales activas
+                contact.social_networks = [
+                    network for network in contact.social_networks 
+                    if network.get('active', False)
+                ]
+        return contacts
+    else:
+        # Para admin, devolver todo
+        return db.exec(select(WepContactModel)).all()
