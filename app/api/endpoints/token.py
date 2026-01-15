@@ -226,7 +226,7 @@ async def verify_token(token: str = Depends(oauth2_scheme), db: Session = Depend
                     algorithms=[ALGORITHM]
                     # verify_exp=True por defecto
                 )
-                logger.info("✅ Token de dashboard válido (no expirado)")
+                logger.info("✅ Token de dashboard válido")
             except JWTError as e:
                 logger.warning(f"⚠️ Token de dashboard expirado: {e}")
                 raise credentials_exception
