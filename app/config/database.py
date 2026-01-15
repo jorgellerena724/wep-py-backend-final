@@ -1024,3 +1024,52 @@ def migrate_all_tenant_schemas():
     except Exception as e:
         logger.error(f"❌ Error en migración masiva: {e}")
         raise
+    
+def drop_tenant_schema(schema_name: str):
+    """Elimina un esquema tenant (solo para PostgreSQL)"""
+    if is_sqlite:
+        logger.info(f"⏭️ SQLite: Ignorando eliminación de esquema '{schema_name}' (no necesario)")
+        return
+    
+    if not validate_schema_name(schema_name):
+        raise ValueError(f"Nombre de esquema inválido: {schema_name}")
+    
+    try:
+        with Session(engine) as session:
+            # Verificar si el esquema existe
+            schema_exists = session.exec(text("""
+                SELECT EXISTS (
+                    SELECT FROM information_schema.schemata 
+                    WHERE schema_name = :schema_name
+                )
+            """).bindparams(schema_name=schema_name)).scalar()
+            
+            if not schema_exists:
+                logger.warning(f"⚠️ Esquema '{schema_name}' no existe, no se puede eliminar")
+                return
+            
+            # Verificar si hay otros usuarios usando este esquema
+            users_with_same_client = session.exec(text("""
+                SELECT COUNT(*) 
+                FROM public.user2 
+                WHERE client = :client_name
+            """).bindparams(client_name=schema_name)).scalar()
+            
+            if users_with_same_client > 0:
+                logger.warning(f"⚠️ Hay {users_with_same_client} usuario(s) usando el esquema '{schema_name}'. No se eliminará.")
+                return
+            
+            # IMPORTANTE: No eliminar esquemas del sistema
+            if schema_name in ['public', 'shirkasoft']:
+                logger.warning(f"⚠️ No se puede eliminar el esquema del sistema '{schema_name}'")
+                return
+            
+            # Eliminar el esquema (CASCADE eliminará todas las tablas dentro)
+            logger.warning(f"🗑️ Eliminando esquema '{schema_name}'...")
+            session.exec(text(f"DROP SCHEMA IF EXISTS {schema_name} CASCADE"))
+            session.commit()
+            logger.info(f"✅ Esquema '{schema_name}' eliminado correctamente")
+            
+    except Exception as e:
+        logger.error(f"❌ Error al eliminar esquema '{schema_name}': {e}")
+        raise

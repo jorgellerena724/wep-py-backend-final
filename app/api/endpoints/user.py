@@ -138,9 +138,42 @@ async def delete_user(
     user = db.get(WepUserModel, user_id)
     if not user:
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
-
     
+    # 2. No permitir eliminar el usuario admin principal
+    if user.email == "admin@shirkasoft.com":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No se puede eliminar el usuario administrador principal"
+        )
+    
+    # 3. Guardar el nombre del client para verificar después
+    client_to_check = user.client
+    
+    # 4. Eliminar el usuario
     db.delete(user)
     db.commit()
-
-    return None  # 204 No Content
+    
+    # 5. Verificar si se debe eliminar el esquema tenant
+    try:
+        # Contar cuántos usuarios quedan con este mismo client
+        remaining_users = db.exec(
+            select(WepUserModel).where(WepUserModel.client == client_to_check)
+        ).all()
+        
+        # Si no quedan usuarios con este client, eliminar el esquema
+        if len(remaining_users) == 0:
+            from app.config.database import drop_tenant_schema, is_sqlite_db
+            
+            # Solo eliminar esquema si NO es SQLite
+            if not is_sqlite_db():
+                # Verificar que no sea un esquema del sistema
+                if client_to_check and client_to_check not in ['public', 'shirkasoft']:
+                    drop_tenant_schema(client_to_check)
+            else:
+                logger.info(f"⏭️ SQLite: No se elimina esquema para '{client_to_check}'")
+                
+    except Exception as e:
+        # No fallar la operación principal si hay error al eliminar el esquema
+        logger.error(f"⚠️ Error al intentar eliminar esquema: {e}")
+    
+    return None
