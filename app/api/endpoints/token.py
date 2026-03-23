@@ -1,6 +1,7 @@
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Generator, List
-from fastapi import APIRouter, Depends, HTTPException, Form, logger, status
+from fastapi import APIRouter, Depends, HTTPException, Form, status
+from fastapi.logger import logger
 from fastapi.security import OAuth2PasswordBearer
 from jose import jwt, JWTError
 from passlib.context import CryptContext
@@ -176,6 +177,7 @@ async def login(
 # ----------------------------
 
 async def verify_token(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
+    logger.info("🔐 verify_token: INICIO")
     
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,

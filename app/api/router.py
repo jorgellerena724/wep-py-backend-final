@@ -1,5 +1,7 @@
 from fastapi import APIRouter
 
+from app.api.endpoints import daily_metrics, metrics_config
+
 from .endpoints import header
 from .endpoints import token
 from .endpoints import user
@@ -34,6 +36,8 @@ api_router.include_router(company.router, prefix="/company", tags=["Company"])
 api_router.include_router(contact.router, prefix="/contact", tags=["Contact"])
 api_router.include_router(manager.router, prefix="/manager", tags=["Manager"])
 api_router.include_router(manager_category.router, prefix="/manager-category", tags=["Categoria manager"])
+api_router.include_router(daily_metrics.router,  prefix="/metrics", tags=["metrics"])
+api_router.include_router(metrics_config.router, prefix="/metrics-config", tags=["metrics-config"])
 api_router.include_router(reviews.router, prefix="/reviews", tags=["Reviews"])
 api_router.include_router(news.router, prefix="/news", tags=["News"])
 api_router.include_router(products.router, prefix="/product", tags=["Products"])

@@ -29,9 +29,6 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
-# Configuración de middleware y rutas
-app.mount("/uploads", StaticFiles(directory=settings.UPLOADS), name="uploads")
-
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.CORS_ALLOWED_ORIGINS,
@@ -40,6 +37,9 @@ app.add_middleware(
     allow_headers=["*"],
     expose_headers=["*"]
 )
+
+# Configuración de middleware y rutas
+app.mount("/uploads", StaticFiles(directory=settings.UPLOADS), name="uploads")
 
 app.include_router(api_router, prefix="/api", tags=["API Router"])
 
