@@ -1,4 +1,4 @@
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from typing import Dict
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlmodel import Session, select
@@ -107,3 +107,11 @@ def get_metrics_summary(
             totals[e] += record.counters.get(e, 0)
 
     return {"start_date": start_date, "end_date": end_date, "days_with_data": len(records), "totals": totals}
+
+@router.get("/server-time/")
+def get_server_time(current_user = Depends(verify_token)):
+    now = datetime.now()
+    return {
+        "server_time": now.strftime("%Y-%m-%d %H:%M:%S"),
+        "timezone": "America/Bogota"  # o el que uses en tu config
+    }
