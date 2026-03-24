@@ -6,8 +6,25 @@ from app.models.wep_user_model import WepUserModel
 from app.models.wep_reviews_model import WepReviewsModel
 from app.services.file_service import FileService
 from sqlalchemy.orm import Session
+import json
+from fastapi import UploadFile, File
 
 router = APIRouter()
+
+def parse_google_reviews(data: dict) -> list[dict]:
+    reviews = data.get("reviews", [])
+    result = []
+    for r in reviews:
+        title       = r.get("reviewer", {}).get("displayName", "").strip()
+        description = r.get("comment", "").strip()
+        if title and description:
+            result.append({"title": title, "description": description})
+    return result
+
+PARSERS = {
+    "google": parse_google_reviews,
+    # "yelp": parse_yelp_reviews,  ← futuro
+}
 
 @router.post("/", response_model=WepReviewsModel)
 async def create_reviews(
@@ -132,3 +149,55 @@ def delete_reviews(reviews_id: int, current_user: WepUserModel = Depends(verify_
             status_code=500,
             detail=f"Error eliminando reviews: {str(e)}"
         )
+        
+@router.post("/import/")
+async def import_reviews(
+    file:   UploadFile = File(...),
+    source: str        = Form(...),  # "google", "yelp", etc.
+    current_user: WepUserModel = Depends(verify_token),
+    db: Session = Depends(get_tenant_session)
+):
+    if source not in PARSERS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Fuente '{source}' no soportada. Disponibles: {list(PARSERS.keys())}"
+        )
+
+    if not file.filename.endswith(".json"):
+        raise HTTPException(status_code=400, detail="Solo se aceptan archivos .json")
+
+    try:
+        content = await file.read()
+        data    = json.loads(content)
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="JSON inválido")
+
+    parsed = PARSERS[source](data)
+
+    if not parsed:
+        raise HTTPException(status_code=400, detail="No se encontraron reviews válidas en el archivo")
+
+    created  = 0
+    skipped  = 0
+    existing_titles = {r.title for r in db.exec(select(WepReviewsModel)).all()}
+
+    for item in parsed:
+        if item["title"] in existing_titles:
+            skipped += 1
+            continue
+        db.add(WepReviewsModel(
+            title=item["title"],
+            description=item["description"],
+            photo=None
+        ))
+        existing_titles.add(item["title"])
+        created += 1
+
+    db.commit()
+
+    return {
+        "source":  source,
+        "created": created,
+        "skipped": skipped,
+        "total":   len(parsed)
+    }

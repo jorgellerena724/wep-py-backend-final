@@ -9,7 +9,7 @@ class WepReviewsModel(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     title: str        = Field(max_length=100, nullable=False)
     description : str = Field(sa_type=Text(), nullable=False)
-    photo: str        = Field(max_length=80, nullable=False)  
+    photo:       Optional[str] = Field(default=None, max_length=80, nullable=True)
    
     class Config:
         from_attributes = True
