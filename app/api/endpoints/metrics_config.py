@@ -37,6 +37,15 @@ def get_config(
 ):
     return get_config_record(db, current_user.id)
 
+@router.get("/config/all/")
+def get_all_configs(
+    db: Session = Depends(get_tenant_session),
+    current_user = Depends(verify_token)
+):
+    """Obtiene todas las configuraciones de métricas existentes"""
+    configs = db.exec(select(MetricsConfig)).all()
+    return configs
+
 @router.post("/config/event/", status_code=201)
 def add_event(
     event_name: str,
