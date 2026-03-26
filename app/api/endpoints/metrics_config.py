@@ -8,10 +8,10 @@ from app.models.wep_metrics_config_model import MetricEvent, MetricsConfig
 router = APIRouter()
 
 
-def get_config_record(db: Session) -> MetricsConfig:
-    record = db.exec(select(MetricsConfig)).first()
+def get_config_record(db: Session, user_id: int) -> MetricsConfig:
+    record = db.exec(select(MetricsConfig).where(MetricsConfig.user_id == user_id)).first()
     if not record:
-        record = MetricsConfig(events=[])
+        record = MetricsConfig(user_id=user_id, events=[])
         db.add(record)
         db.commit()
         db.refresh(record)
@@ -20,8 +20,8 @@ def get_config_record(db: Session) -> MetricsConfig:
         record.events = []
     return record
 
-def get_active_events(db: Session) -> list[str]:
-    record = get_config_record(db)
+def get_active_events(db: Session, user_id: int) -> list[str]:
+    record = get_config_record(db, user_id)
     if not record.events:          # ← cubre None y []
         return []
     return [
@@ -35,7 +35,7 @@ def get_config(
     db: Session = Depends(get_tenant_session),
     current_user = Depends(verify_token)
 ):
-    return get_config_record(db)
+    return get_config_record(db, current_user.id)
 
 @router.post("/config/event/", status_code=201)
 def add_event(
@@ -44,7 +44,7 @@ def add_event(
     db: Session = Depends(get_tenant_session),
     current_user = Depends(verify_token)
 ):
-    record = get_config_record(db)
+    record = get_config_record(db, current_user.id)
 
     if any(e['event_name'] == event_name for e in record.events):
         raise HTTPException(status_code=400, detail="El evento ya existe")
@@ -65,7 +65,7 @@ def update_event(
     db: Session = Depends(get_tenant_session),
     current_user = Depends(verify_token)
 ):
-    record = get_config_record(db)
+    record = get_config_record(db, current_user.id)
 
     # ✅ Buscar el dict completo, no solo el nombre
     event_dict = next((e for e in record.events if e['event_name'] == event_name), None)
@@ -90,7 +90,7 @@ def delete_event(
     db: Session = Depends(get_tenant_session),
     current_user = Depends(verify_token)
 ):
-    record = get_config_record(db)
+    record = get_config_record(db, current_user.id)
 
     if not any(e['event_name'] == event_name for e in record.events):
         raise HTTPException(status_code=404, detail="Evento no encontrado")

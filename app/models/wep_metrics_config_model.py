@@ -1,8 +1,11 @@
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, TYPE_CHECKING
 from pydantic import BaseModel
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy import Column
-from sqlmodel import Field, SQLModel
+from sqlmodel import Field, SQLModel, Relationship
+
+if TYPE_CHECKING:
+    from app.models.wep_user_model import WepUserModel
 
 class MetricEvent(BaseModel):
     event_name: str
@@ -12,10 +15,17 @@ class MetricEvent(BaseModel):
 class MetricsConfig(SQLModel, table=True):
     __tablename__ = "metrics_config"
 
-    id:     Optional[int]                    = Field(default=None, primary_key=True)
-    events: Optional[List[Dict[str, Any]]]   = Field(      # ← igual que social_networks
+    id:      Optional[int]                   = Field(default=None, primary_key=True)
+    user_id: int                            = Field(foreign_key="public.user2.id", nullable=False, unique=True)
+    events:  Optional[List[Dict[str, Any]]]  = Field(
         default=None,
         sa_column=Column(JSONB)
+    )
+
+    # Relación con usuario
+    user: Optional["WepUserModel"] = Relationship(
+        back_populates="metrics_config",
+        sa_relationship_kwargs={"lazy": "joined"}
     )
 
     class Config:

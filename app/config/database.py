@@ -6,6 +6,9 @@ from app.config.config import settings
 import logging
 import re
 
+# Importar todos los modelos para que SQLModel los registre
+from app.models import *  # Esto importa todos los modelos del __init__.py
+
 
 DEFAULT_SOCIAL_NETWORKS = [
     {"network": "whatsapp", "url": "https://wa.me/", "username": "", "active": False},

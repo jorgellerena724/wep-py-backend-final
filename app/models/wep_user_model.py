@@ -4,6 +4,7 @@ from app.config.config import settings
 
 if TYPE_CHECKING:
     from app.models.wep_chatbot_model import ChatbotConfig
+    from app.models.wep_metrics_config_model import MetricsConfig
 
 class WepUserModel(SQLModel, table=True):
     if settings.USE_SQLITE:
@@ -21,6 +22,11 @@ class WepUserModel(SQLModel, table=True):
     chatbot: Optional["ChatbotConfig"] = Relationship(
         back_populates="user",
         sa_relationship_kwargs={"lazy": "joined"}  # Carga automática
+    )
+    
+    metrics_config: Optional["MetricsConfig"] = Relationship(
+        back_populates="user",
+        sa_relationship_kwargs={"lazy": "joined"}
     )
    
     class Config:
