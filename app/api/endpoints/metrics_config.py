@@ -38,7 +38,7 @@ def get_all_configs(
     db: Session = Depends(get_db),
     current_user = Depends(verify_token)
 ):
-    configs = db.exec(select(MetricsConfig)).all()
+    configs = db.exec(select(MetricsConfig).order_by(MetricsConfig.id)).all()
     return [
         {
             "id":     config.id,
@@ -67,7 +67,10 @@ def get_users_without_config(
 ):
     configured_ids = set(db.exec(select(MetricsConfig.user_id)).all())
     users = db.exec(select(WepUserModel)).all()
-    return [u for u in users if u.id not in configured_ids]
+    return [
+        {"id": u.id, "client": u.client}
+        for u in users if u.id not in configured_ids
+    ]
 
 # ── Crear config para un usuario ──────────────────────────────
 @router.post("/", status_code=201)
@@ -98,6 +101,8 @@ def update_events(
     if not record:
         raise HTTPException(status_code=404, detail="Configuración no encontrada")
 
+    if body.user_id is not None:
+        record.user_id = body.user_id
     record.events = body.events
     flag_modified(record, "events")
     db.commit()
