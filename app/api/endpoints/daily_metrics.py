@@ -1,29 +1,58 @@
 from datetime import date, datetime, timedelta
-from typing import Dict
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlmodel import Session, select
-import logging
-from fastapi.encoders import jsonable_encoder
-
-logger = logging.getLogger(__name__)
+from app.config.database import get_db
 from sqlalchemy.orm.attributes import flag_modified
-from app.api.endpoints.metrics_config import get_active_events, get_config_record
+from app.api.endpoints.metrics_config import get_active_events
 from app.api.endpoints.token import verify_token, get_tenant_session
 from app.models.wep_daily_metrics_model import DailyMetrics
+import logging
+
+from app.models.wep_metrics_config_model import MetricsConfig
+from app.models.wep_user_model import WepUserModel
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
 @router.patch("/update-metric/{event_name}/")
 def increment_metric(
-    event_name: str,
-    db: Session = Depends(get_tenant_session),
+    event_name:   str,
+    db:           Session = Depends(get_tenant_session),
+    public_db:    Session = Depends(get_db),
     current_user = Depends(verify_token)
 ):
-    active = get_active_events(db)
+    source = getattr(current_user, 'source', 'unknown')
+
+    # Determinar el user_id para obtener la configuración
+    if source == "website":
+        owner_user = public_db.exec(
+            select(WepUserModel)
+            .where(
+                WepUserModel.client == current_user.client,
+                WepUserModel.email.like("%@shirkasoft.com")
+            )
+        ).first()
+
+        if not owner_user:
+            owner_user = public_db.exec(
+                select(WepUserModel)
+                .join(MetricsConfig, MetricsConfig.user_id == WepUserModel.id)
+                .where(WepUserModel.client == current_user.client)
+            ).first()
+
+        if not owner_user:
+            raise HTTPException(status_code=404, detail="No se encontró configuración para este cliente")
+
+        config_user_id = owner_user.id
+    else:
+        config_user_id = current_user.id
+
+    active = get_active_events(public_db, config_user_id)
     if event_name not in active:
         raise HTTPException(status_code=400, detail=f"Evento '{event_name}' no está configurado")
 
-    today = date.today()
+    today  = date.today()
     record = db.get(DailyMetrics, today)
     if not record:
         record = DailyMetrics(daily_date=today, counters={})
@@ -34,28 +63,29 @@ def increment_metric(
     record.counters[event_name] = new_value
     flag_modified(record, "counters")
     db.commit()
-
     return {"date": today, "event": event_name, "value": new_value}
 
 @router.get("/today/")
 def get_today_metrics(
-    db: Session = Depends(get_tenant_session),
+    db:          Session = Depends(get_tenant_session),
+    public_db:   Session = Depends(get_db),
     current_user = Depends(verify_token)
 ):
-    logger.info("🚀 /metrics/today/: Entrando al endpoint")
     today  = date.today()
     record = db.get(DailyMetrics, today)
-    events = get_active_events(db)
+    events = get_active_events(public_db, current_user.id)
     return {
-        "date": today,
+        "date":     today,
         "counters": {e: record.counters.get(e, 0) for e in events} if record else {e: 0 for e in events}
     }
 
+
 @router.get("/range/")
 def get_metrics_range(
-    start_date: date = Query(...),
-    end_date:   date = Query(...),
-    db: Session = Depends(get_tenant_session),
+    start_date:  date    = Query(...),
+    end_date:    date    = Query(...),
+    db:          Session = Depends(get_tenant_session),
+    public_db:   Session = Depends(get_db),
     current_user = Depends(verify_token)
 ):
     if start_date > end_date:
@@ -63,21 +93,20 @@ def get_metrics_range(
     if (end_date - start_date).days > 90:
         raise HTTPException(status_code=400, detail="El rango máximo es 90 días")
 
-    events  = get_active_events(db)
+    events  = get_active_events(public_db, current_user.id)
     records = db.exec(
         select(DailyMetrics)
         .where(DailyMetrics.daily_date >= start_date)
         .where(DailyMetrics.daily_date <= end_date)
         .order_by(DailyMetrics.daily_date)
     ).all()
-    records_by_date = {r.daily_date: r for r in records}
 
-    result  = []
-    current = start_date
+    records_by_date = {r.daily_date: r for r in records}
+    result, current = [], start_date
     while current <= end_date:
         record = records_by_date.get(current)
         result.append({
-            "date": current,
+            "date":     current,
             "counters": {e: record.counters.get(e, 0) for e in events} if record else {e: 0 for e in events}
         })
         current += timedelta(days=1)
@@ -86,15 +115,16 @@ def get_metrics_range(
 
 @router.get("/summary/")
 def get_metrics_summary(
-    start_date: date = Query(...),
-    end_date:   date = Query(...),
-    db: Session = Depends(get_tenant_session),
+    start_date:  date    = Query(...),
+    end_date:    date    = Query(...),
+    db:          Session = Depends(get_tenant_session),
+    public_db:   Session = Depends(get_db),
     current_user = Depends(verify_token)
 ):
     if (end_date - start_date).days > 90:
         raise HTTPException(status_code=400, detail="El rango máximo es 90 días")
 
-    events  = get_active_events(db)
+    events  = get_active_events(public_db, current_user.id)
     records = db.exec(
         select(DailyMetrics)
         .where(DailyMetrics.daily_date >= start_date)

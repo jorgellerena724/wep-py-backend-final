@@ -14,6 +14,7 @@ class MetricEvent(BaseModel):
 
 class MetricsConfig(SQLModel, table=True):
     __tablename__ = "metrics_config"
+    __table_args__  = {"schema": "public"}
 
     id:      Optional[int]                   = Field(default=None, primary_key=True)
     user_id: int                            = Field(foreign_key="public.user2.id", nullable=False, unique=True)

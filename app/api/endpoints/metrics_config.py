@@ -1,12 +1,21 @@
-from typing import Optional
+from typing import Optional, List, Dict, Any
 from sqlalchemy.orm.attributes import flag_modified
 from fastapi import APIRouter, Depends, HTTPException
-from sqlmodel import Session, select
-from app.api.endpoints.token import get_tenant_session, verify_token
-from app.models.wep_metrics_config_model import MetricEvent, MetricsConfig
+from sqlmodel import SQLModel, Session, select
+from app.api.endpoints.token import verify_token
+from app.config.database import get_db
+from app.models.wep_metrics_config_model import MetricsConfig
+from app.models.wep_user_model import WepUserModel
+
+class CreateConfigBody(SQLModel):
+    user_id: int
+    events:  List[Dict[str, Any]] = []
+
+class UpdateEventsBody(SQLModel):
+    events: List[Dict[str, Any]]  # el front manda el array completo
+    user_id: Optional[int] = None
 
 router = APIRouter()
-
 
 def get_config_record(db: Session, user_id: int) -> MetricsConfig:
     record = db.exec(select(MetricsConfig).where(MetricsConfig.user_id == user_id)).first()
@@ -15,95 +24,95 @@ def get_config_record(db: Session, user_id: int) -> MetricsConfig:
         db.add(record)
         db.commit()
         db.refresh(record)
-    # Si existe pero events es None, normalizar a lista vacía
     if record.events is None:
         record.events = []
     return record
 
 def get_active_events(db: Session, user_id: int) -> list[str]:
     record = get_config_record(db, user_id)
-    if not record.events:          # ← cubre None y []
-        return []
+    return [e['event_name'] for e in record.events if isinstance(e, dict)]
+
+# ── Listar todas las configs ──────────────────────────────────
+@router.get("/")
+def get_all_configs(
+    db: Session = Depends(get_db),
+    current_user = Depends(verify_token)
+):
+    configs = db.exec(select(MetricsConfig)).all()
     return [
-        e['event_name'] 
-        for e in record.events 
-        if isinstance(e, dict) and e.get('is_active', True)
+        {
+            "id":     config.id,
+            "events": config.events,
+            "user": {
+                "id":     user.id,
+                "client": user.client,
+            } if (user := db.get(WepUserModel, config.user_id)) else None
+        }
+        for config in configs
     ]
 
-@router.get("/config/")
-def get_config(
-    db: Session = Depends(get_tenant_session),
+# ── Config del usuario actual ─────────────────────────────────
+@router.get("/user/")
+def get_my_config(
+    db: Session = Depends(get_db),
     current_user = Depends(verify_token)
 ):
     return get_config_record(db, current_user.id)
 
-@router.get("/config/all/")
-def get_all_configs(
-    db: Session = Depends(get_tenant_session),
+# ── Usuarios sin configuración ────────────────────────────────
+@router.get("/users/")
+def get_users_without_config(
+    db: Session = Depends(get_db),
     current_user = Depends(verify_token)
 ):
-    """Obtiene todas las configuraciones de métricas existentes"""
-    configs = db.exec(select(MetricsConfig)).all()
-    return configs
+    configured_ids = set(db.exec(select(MetricsConfig.user_id)).all())
+    users = db.exec(select(WepUserModel)).all()
+    return [u for u in users if u.id not in configured_ids]
 
-@router.post("/config/event/", status_code=201)
-def add_event(
-    event_name: str,
-    label: str,
-    db: Session = Depends(get_tenant_session),
+# ── Crear config para un usuario ──────────────────────────────
+@router.post("/", status_code=201)
+def create_config(
+    body: CreateConfigBody,
+    db: Session = Depends(get_db),
     current_user = Depends(verify_token)
 ):
-    record = get_config_record(db, current_user.id)
+    existing = db.exec(select(MetricsConfig).where(MetricsConfig.user_id == body.user_id)).first()
+    if existing:
+        raise HTTPException(status_code=400, detail="El usuario ya tiene una configuración")
 
-    if any(e['event_name'] == event_name for e in record.events):
-        raise HTTPException(status_code=400, detail="El evento ya existe")
-
-    new_event = MetricEvent(event_name=event_name, label=label).model_dump()
-    record.events = [*record.events, new_event]
-    flag_modified(record, "events")
+    record = MetricsConfig(user_id=body.user_id, events=body.events)
+    db.add(record)
     db.commit()
-    db.merge(record)
+    db.refresh(record)
     return record
 
-
-@router.patch("/config/event/{event_name}/")
-def update_event(
-    event_name: str,
-    label: Optional[str] = None,
-    is_active: Optional[bool] = None,
-    db: Session = Depends(get_tenant_session),
+# ── Sobreescribir eventos completos ───────────────────────────
+@router.patch("/{config_id}/")
+def update_events(
+    config_id: int,
+    body: UpdateEventsBody,
+    db: Session = Depends(get_db),
     current_user = Depends(verify_token)
 ):
-    record = get_config_record(db, current_user.id)
+    record = db.get(MetricsConfig, config_id)
+    if not record:
+        raise HTTPException(status_code=404, detail="Configuración no encontrada")
 
-    # ✅ Buscar el dict completo, no solo el nombre
-    event_dict = next((e for e in record.events if e['event_name'] == event_name), None)
-    if not event_dict:
-        raise HTTPException(status_code=404, detail="Evento no encontrado")
-
-    # ✅ Mutar el dict directamente
-    if label     is not None: event_dict['label']     = label
-    if is_active is not None: event_dict['is_active'] = is_active
-
-    # Nueva referencia para que flag_modified funcione
-    record.events = [*record.events]
+    record.events = body.events
     flag_modified(record, "events")
     db.commit()
     db.refresh(record)
     return record
 
-
-@router.delete("/config/event/{event_name}/", status_code=204)
-def delete_event(
-    event_name: str,
-    db: Session = Depends(get_tenant_session),
+# ── Eliminar config completa ──────────────────────────────────
+@router.delete("/{config_id}/", status_code=204)
+def delete_config(
+    config_id: int,
+    db: Session = Depends(get_db),
     current_user = Depends(verify_token)
 ):
-    record = get_config_record(db, current_user.id)
-
-    if not any(e['event_name'] == event_name for e in record.events):
-        raise HTTPException(status_code=404, detail="Evento no encontrado")
-
-    record.events = [e for e in record.events if e['event_name'] != event_name]
-    flag_modified(record, "events")
+    record = db.get(MetricsConfig, config_id)
+    if not record:
+        raise HTTPException(status_code=404, detail="Configuración no encontrada")
+    db.delete(record)
     db.commit()

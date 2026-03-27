@@ -6,10 +6,6 @@ from app.config.config import settings
 import logging
 import re
 
-# Importar todos los modelos para que SQLModel los registre
-from app.models import *  # Esto importa todos los modelos del __init__.py
-
-
 DEFAULT_SOCIAL_NETWORKS = [
     {"network": "whatsapp", "url": "https://wa.me/", "username": "", "active": False},
     {"network": "facebook", "url": "https://facebook.com/", "username": "", "active": False},
@@ -615,7 +611,7 @@ def validate_schema_name(schema_name: str) -> bool:
     pattern = r'^[a-zA-Z0-9_]{1,50}$'
     return bool(re.match(pattern, schema_name))
 
-def get_all_tables_except_user():
+def get_all_tables_except():
     """Obtiene todas las tablas excepto user2 y active_sessions"""
     try:
         with Session(engine) as session:
@@ -624,7 +620,7 @@ def get_all_tables_except_user():
                     SELECT name 
                     FROM sqlite_master 
                     WHERE type = 'table'
-                    AND name NOT IN ('user2', 'active_sessions', 'chatbot_config', 'chatbot_usage', 'chatbot_model')
+                    AND name NOT IN ('user2', 'active_sessions', 'chatbot_config', 'chatbot_usage', 'chatbot_model', 'metrics_config')
                     ORDER BY name
                 """))
                 tables = [row[0] for row in result.fetchall()]
@@ -634,7 +630,7 @@ def get_all_tables_except_user():
                     FROM information_schema.tables 
                     WHERE table_schema = 'public' 
                     AND table_type = 'BASE TABLE'
-                    AND table_name NOT IN ('user2', 'active_sessions','chatbot_config', 'chatbot_usage', 'chatbot_model')
+                    AND table_name NOT IN ('user2', 'active_sessions','chatbot_config', 'chatbot_usage', 'chatbot_model', 'metrics_config')
                     ORDER BY table_name
                 """))
                 tables = [row[0] for row in result.fetchall()]
@@ -670,7 +666,7 @@ def create_tenant_schema(client_name: str):
             session.exec(text(f"CREATE SCHEMA IF NOT EXISTS {client_name}"))
             
             # 2. Obtener todas las tablas del esquema public (excepto user2 y active_sessions)
-            tables_to_create = get_all_tables_except_user()
+            tables_to_create = get_all_tables_except()
             
             if not tables_to_create:
                 logger.warning("⚠️ No se encontraron tablas para copiar")
@@ -959,7 +955,7 @@ def migrate_existing_tenant_schema(client_name: str):
                 return
             
             # Obtener tablas disponibles y existentes
-            public_tables = get_all_tables_except_user()
+            public_tables = get_all_tables_except()
             existing_tenant_tables = session.exec(text("""
                 SELECT table_name 
                 FROM information_schema.tables 
