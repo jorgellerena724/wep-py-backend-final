@@ -52,34 +52,42 @@ class ChatbotModelResponse(SQLModel):
     status: bool
     daily_token_limit: int
 
+class ChatbotProviderItem(SQLModel):
+    """Un provider configurado con su API key"""
+    provider: str
+    api_key: str
+
 class ChatbotConfigCreate(SQLModel):
     """Crear configuración desde el dashboard"""
     user_id: int
-    api_key: str
-    model_id: int
+    models: List[ChatbotProviderItem]
     prompt: str
     temperature: float = 0.7
 
 class ChatbotConfigUpdate(SQLModel):
     """Actualizar configuración desde el dashboard"""
     user_id: Optional[int] = None
-    api_key: Optional[str] = None
-    model_id: Optional[int] = None
+    models: Optional[List[ChatbotProviderItem]] = None
     prompt: Optional[str] = None
     temperature: Optional[float] = None
     status: Optional[bool] = None
+
+class ChatbotConfigModelInfo(SQLModel):
+    """Info de un provider en la config"""
+    provider: str
+    api_key: str
+    tokens_used: int = 0
+    tokens_limit: int
+    tokens_remaining: int
 
 class ChatbotConfigResponse(SQLModel):
     """Response al obtener configuración"""
     id: int
     user: UserResponse
-    model: ChatbotModelResponse
+    models: List[ChatbotConfigModelInfo]
     prompt: str
     temperature: float
     status: bool
-    tokens_used_today: int = 0
-    tokens_limit: int
-    tokens_remaining: int
 
 # Crear router
 router = APIRouter()
@@ -321,11 +329,19 @@ async def create_config(
                 detail=f"Ya existe una configuración para el usuario {config_data.user_id}"
             )
         
+        # Convertir models a JSON y hashear api_keys
+        import json
+        models_json = []
+        for item in config_data.models:
+            models_json.append({
+                "provider": item.provider,
+                "api_key": hashlib.sha256(item.api_key.encode()).hexdigest()
+            })
+        
         # Crear nueva configuración
         new_config = ChatbotConfig(
             user_id=config_data.user_id,
-            api_key=hashlib.sha256(config_data.api_key.encode()).hexdigest(),
-            model_id=config_data.model_id,
+            models=json.dumps(models_json),
             prompt=config_data.prompt,
             temperature=config_data.temperature,
             status=True,
@@ -364,6 +380,8 @@ async def get_config(
 ):
     """Obtiene configuración de un usuario."""
     try:
+        import json as json_lib
+        
         config = db.exec(
             select(ChatbotConfig).where(ChatbotConfig.user_id == user_id)
         ).first()
@@ -374,15 +392,49 @@ async def get_config(
                 detail=f"No existe configuración para el usuario {user_id}"
             )
         
+        user = db.get(WepUserModel, user_id)
+        
+        models_info = []
+        for model_item in config.models_list:
+            provider = model_item.get("provider", "")
+            api_key = model_item.get("api_key", "")
+            
+            provider_models = db.exec(
+                select(ChatbotModel).where(
+                    ChatbotModel.provider.ilike(provider),
+                    ChatbotModel.status == True
+                )
+            ).all()
+            
+            total_tokens_remaining = 0
+            total_tokens_limit = 0
+            for model in provider_models:
+                usage = _calculate_token_usage(
+                    db=db,
+                    api_key=api_key,
+                    model_id=model.id,
+                    daily_token_limit=model.daily_token_limit
+                )
+                total_tokens_remaining += usage.get("tokens_remaining", 0)
+                total_tokens_limit += usage.get("tokens_limit", 0)
+            
+            models_info.append(
+                ChatbotConfigModelInfo(
+                    provider=provider,
+                    api_key="***",
+                    tokens_used=total_tokens_limit - total_tokens_remaining,
+                    tokens_limit=total_tokens_limit,
+                    tokens_remaining=total_tokens_remaining
+                )
+            )
+        
         return ChatbotConfigResponse(
             id=config.id,
-            user_id=config.user_id,
-            model_id=config.model_id,
+            user=user,
+            models=models_info,
             prompt=config.prompt,
             temperature=config.temperature,
-            status=config.status,
-            created_at=config.created_at,
-            updated_at=config.updated_at
+            status=config.status
         )
         
     except HTTPException:
@@ -401,38 +453,61 @@ async def list_configs(
 ):
     """Lista todas las configuraciones con información de tokens."""
     try:
-        # Cargar todas las configs con relaciones
+        import json as json_lib
+        
         configs = db.exec(
             select(ChatbotConfig)
             .options(
-                selectinload(ChatbotConfig.user),
-                selectinload(ChatbotConfig.model)
+                selectinload(ChatbotConfig.user)
             )
             .order_by(ChatbotConfig.id)
         ).all()
         
-        # ✅ Agregar información de tokens a cada config
         result = []
         for config in configs:
-            # Calcular uso de tokens
-            token_usage = _calculate_token_usage(
-                db=db,
-                api_key=config.api_key,
-                model_id=config.model_id,
-                daily_token_limit=config.model.daily_token_limit
-            )
+            models_info = []
+            for model_item in config.models_list:
+                provider = model_item.get("provider", "")
+                api_key = model_item.get("api_key", "")
+                
+                # Buscar modelos activos de este provider para calcular tokens
+                provider_models = db.exec(
+                    select(ChatbotModel).where(
+                        ChatbotModel.provider.ilike(provider),
+                        ChatbotModel.status == True
+                    )
+                ).all()
+                
+                total_tokens_remaining = 0
+                total_tokens_limit = 0
+                for model in provider_models:
+                    usage = _calculate_token_usage(
+                        db=db,
+                        api_key=api_key,
+                        model_id=model.id,
+                        daily_token_limit=model.daily_token_limit
+                    )
+                    total_tokens_remaining += usage.get("tokens_remaining", 0)
+                    total_tokens_limit += usage.get("tokens_limit", 0)
+                
+                models_info.append(
+                    ChatbotConfigModelInfo(
+                        provider=provider,
+                        api_key="***",
+                        tokens_used=total_tokens_limit - total_tokens_remaining,
+                        tokens_limit=total_tokens_limit,
+                        tokens_remaining=total_tokens_remaining
+                    )
+                )
             
             result.append(
                 ChatbotConfigResponse(
                     id=config.id,
                     user=config.user,
-                    model=config.model,
+                    models=models_info,
                     prompt=config.prompt,
                     temperature=config.temperature,
-                    status=config.status,
-                    created_at=config.created_at,
-                    updated_at=config.updated_at,
-                    **token_usage
+                    status=config.status
                 )
             )
         
@@ -454,6 +529,8 @@ async def update_config(
 ):
     """Actualiza configuración de un usuario."""
     try:
+        import json as json_lib
+        
         config = db.get(ChatbotConfig, config_id)
         
         if not config:
@@ -462,17 +539,20 @@ async def update_config(
                 detail="Configuración de IA no encontrada"
             )
         
-        if data.model_id is not None:
-            config.model_id = data.model_id
+        if data.models is not None:
+            models_json = []
+            for item in data.models:
+                models_json.append({
+                    "provider": item.provider,
+                    "api_key": hashlib.sha256(item.api_key.encode()).hexdigest()
+                })
+            config.models = json_lib.dumps(models_json)
         
         if data.user_id is not None:
             config.user_id = data.user_id
             
         if data.prompt is not None:
             config.prompt = data.prompt
-            
-        if data.api_key is not None:
-            config.api_key = data.api_key
             
         if data.status is not None:
             config.status = data.status

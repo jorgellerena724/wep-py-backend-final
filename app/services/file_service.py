@@ -1,16 +1,11 @@
-import uuid
 from fastapi import UploadFile, HTTPException
 from pathlib import Path
-import os
 from io import BytesIO
-import mimetypes
 from fastapi.responses import FileResponse
 from PIL import Image
 from pillow_heif import register_heif_opener
-import subprocess
-import tempfile
+import tempfile, subprocess, os, logging, mimetypes, uuid
 from typing import Tuple, Dict
-import logging
 
 from ..config.config import settings
 
@@ -493,7 +488,7 @@ class FileService:
                 "encoding": encoding,
                 "size": stats.st_size,
                 "size_mb": stats.st_size / (1024 * 1024),
-                "created": stats.st_ctime,
+                "created": stats.st_birthtime,
                 "modified": stats.st_mtime,
                 "path": str(file_path.absolute())
             }

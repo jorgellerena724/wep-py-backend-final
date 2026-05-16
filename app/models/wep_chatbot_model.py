@@ -1,6 +1,6 @@
-from sqlmodel import Column, Relationship, SQLModel, Field, Text, UniqueConstraint
+from sqlmodel import Column, Relationship, SQLModel, Field, Text, UniqueConstraint, JSON
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, List, Optional
+from typing import TYPE_CHECKING, List, Optional, Dict, Any
 from app.config.config import settings
 
 if TYPE_CHECKING:
@@ -21,13 +21,13 @@ class ChatbotModel(SQLModel, table=True):
     daily_token_limit: int = Field(default=100000, nullable=False)
     
     # Relación inversa
-    configs: List["ChatbotConfig"] = Relationship(back_populates="model")
     usages: List["ChatbotUsage"] = Relationship(back_populates="model")
 
 class ChatbotConfig(SQLModel, table=True):
     """
     Configuración del chatbot por usuario.
     Desde el dashboard asignas qué config usar cada user_id.
+    Soporta múltiples modelos con fallback automático.
     """
     if settings.USE_SQLITE:
         __tablename__ = "chatbot_config"
@@ -38,11 +38,12 @@ class ChatbotConfig(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     user_id: int = Field(foreign_key="public.user2.id", nullable=False, unique=True)
     
-    # Configuración de Groq
-    api_key: str = Field()
-    model_id: int = Field(
-        foreign_key="public.chatbot_model.id",
+    # Modelos Configurados (JSON): [{"provider": "groq", "api_key": "gsk_..."}]
+    models: str = Field(
+        sa_column=Column(Text),
+        description="JSON array of {provider, api_key}"
     )
+    
     prompt: str = Field(
         sa_column=Column(Text), 
     )
@@ -62,10 +63,16 @@ class ChatbotConfig(SQLModel, table=True):
         sa_relationship_kwargs={"lazy": "joined"}
     )
     
-    model: Optional["ChatbotModel"] = Relationship(
-        back_populates="configs",
-        sa_relationship_kwargs={"lazy": "joined"}
-    )
+    @property
+    def models_list(self) -> List[Dict[str, Any]]:
+        """Parsea el JSON models y retorna lista de configuraciones."""
+        import json
+        if not self.models:
+            return []
+        try:
+            return json.loads(self.models)
+        except (json.JSONDecodeError, TypeError):
+            return []
     
 class ChatbotUsage(SQLModel, table=True):
     """
