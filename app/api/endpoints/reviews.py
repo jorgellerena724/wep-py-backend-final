@@ -11,6 +11,39 @@ from fastapi import UploadFile, File
 
 router = APIRouter()
 
+GOOGLE_RATING_MAP = {
+    "ONE": 1.0, "TWO": 2.0, "THREE": 3.0,
+    "FOUR": 4.0, "FIVE": 5.0,
+}
+
+STAR_RATING_KEYS = ["starRating", "star_rating", "rating", "stars", "reviewRating", "score"]
+
+def convert_rating(value) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return None
+        upper = stripped.upper()
+        if upper in GOOGLE_RATING_MAP:
+            return GOOGLE_RATING_MAP[upper]
+        try:
+            return float(stripped)
+        except ValueError:
+            return None
+    return None
+
+def _extract_rating(review: dict) -> float | None:
+    for key in STAR_RATING_KEYS:
+        if key in review:
+            val = review[key]
+            if val is not None:
+                return convert_rating(val)
+    return None
+
 def parse_google_reviews(data: dict) -> list[dict]:
     reviews = data.get("reviews", [])
     result = []
@@ -18,7 +51,11 @@ def parse_google_reviews(data: dict) -> list[dict]:
         title       = r.get("reviewer", {}).get("displayName", "").strip()
         description = r.get("comment", "").strip()
         if title and description:
-            result.append({"title": title, "description": description})
+            result.append({
+                "title": title,
+                "description": description,
+                "star_rating": _extract_rating(r),
+            })
     return result
 
 PARSERS = {
@@ -31,6 +68,7 @@ async def create_reviews(
     title: str = Form(..., max_length=100),
     description: str = Form(...),
     photo: UploadFile = Form(...),
+    star_rating: Optional[float] = Form(None),
     current_user: WepUserModel = Depends(verify_token),
     db: Session = Depends(get_tenant_session)
 ):
@@ -42,7 +80,7 @@ async def create_reviews(
         photo_filename = await FileService.save_file(photo, current_user.client)
         
         # Crear registro
-        reviews = WepReviewsModel(title=title, description=description, photo=photo_filename)
+        reviews = WepReviewsModel(title=title, description=description, photo=photo_filename, star_rating=star_rating)
         db.add(reviews)
         db.commit()
         db.merge(reviews)
@@ -61,9 +99,10 @@ async def create_reviews(
 @router.patch("/{reviews_id}", response_model=WepReviewsModel)
 async def update_reviews(
     reviews_id: int,
-    title: Optional[str] = Form(..., max_length=100),
-    description: Optional[str] = Form(...),
+    title: Optional[str] = Form(None, max_length=100),
+    description: Optional[str] = Form(None),
     photo: Optional[UploadFile] = Form(None),
+    star_rating: Optional[float] = Form(None),
     current_user: WepUserModel = Depends(verify_token),
     db: Session = Depends(get_tenant_session)
 ):
@@ -77,10 +116,13 @@ async def update_reviews(
         if title is not None:
             reviews.title = title
 
-        
         # Actualizar descripcion si se proporciona
         if description is not None:
             reviews.description = description
+
+        # Actualizar star_rating si se proporciona
+        if star_rating is not None:
+            reviews.star_rating = star_rating
 
         # Procesar imagen si se proporciona
         if photo is not None:
@@ -115,8 +157,15 @@ async def update_reviews(
         )
 
 @router.get("/", response_model=list[WepReviewsModel])
-def get_reviews( current_user: WepUserModel = Depends(verify_token),db: Session = Depends(get_tenant_session)):
-    return db.exec(select(WepReviewsModel).order_by(WepReviewsModel.id)).all()
+def get_reviews(
+    has_rating: bool = False,
+    current_user: WepUserModel = Depends(verify_token),
+    db: Session = Depends(get_tenant_session)
+):
+    query = select(WepReviewsModel).order_by(WepReviewsModel.id)
+    if has_rating:
+        query = query.where(WepReviewsModel.star_rating.isnot(None))
+    return db.exec(query).all()
 
 @router.get("/{reviews_id}", response_model=WepReviewsModel)
 def get_reviews(reviews_id: int, 
@@ -188,7 +237,8 @@ async def import_reviews(
         db.add(WepReviewsModel(
             title=item["title"],
             description=item["description"],
-            photo=None
+            photo=None,
+            star_rating=item.get("star_rating"),
         ))
         existing_titles.add(item["title"])
         created += 1
