@@ -186,8 +186,9 @@ def delete_reviews(reviews_id: int, current_user: WepUserModel = Depends(verify_
         raise HTTPException(status_code=404, detail="Reviews no encontrado")
     
     try:
-        # Eliminar imagen asociada
-        FileService.delete_file(reviews.photo, current_user.client)
+        # Eliminar imagen asociada (solo si existe)
+        if reviews.photo:
+            FileService.delete_file(reviews.photo, current_user.client)
         
         # Eliminar registro
         db.delete(reviews)
@@ -237,7 +238,7 @@ async def import_reviews(
         db.add(WepReviewsModel(
             title=item["title"],
             description=item["description"],
-            photo=None,
+            photo="",
             star_rating=item.get("star_rating"),
         ))
         existing_titles.add(item["title"])
