@@ -1,8 +1,8 @@
-from typing import Optional
+from typing import Optional, List
 from pydantic_settings import BaseSettings
 from pydantic import Field, field_validator, ConfigDict
 from dotenv import load_dotenv
-import os
+import os, json
 from pathlib import Path
 
 load_dotenv(override=True)
@@ -21,7 +21,7 @@ class Settings(BaseSettings):
     SECRET_KEY: str = Field(..., env="SECRET_KEY")
     DEBUG: bool = Field(False, env="DEBUG")
     ALLOWED_HOSTS: str = Field("", env="ALLOWED_HOSTS")
-    CORS_ALLOWED_ORIGINS: str = Field("", env="CORS_ALLOWED_ORIGINS")
+    CORS_ALLOWED_ORIGINS: List[str] = Field(default_factory=list, env="CORS_ALLOWED_ORIGINS")
     WEP_DATABASE_URL: str = Field(..., env="WEB_DATABASE_URL")
     SERVER_PORT: int = Field(3000, env="SERVER_PORT")
     ENVIRONMENT: str = Field("development", env="ENVIRONMENT")
@@ -63,6 +63,13 @@ class Settings(BaseSettings):
         
         sqlite_path.parent.mkdir(parents=True, exist_ok=True)
         return str(sqlite_path)
+
+    @field_validator('CORS_ALLOWED_ORIGINS', mode='before')
+    @classmethod
+    def parse_cors_origins(cls, v):
+        if isinstance(v, str):
+            return json.loads(v)
+        return v
     
     def get_database_url(self) -> str:
         """Retorna la URL de base de datos según la configuración"""
