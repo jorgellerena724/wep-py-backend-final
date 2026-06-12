@@ -30,7 +30,7 @@ class UserCreateRequest(SQLModel):
     client: str
 
 # --- READ
-@router.get("/", response_model=List[WepUserModel])
+@router.get("/", response_model=List[UserResponse])
 def get_user(
     current_user: WepUserModel = Depends(verify_token),
     db: Session = Depends(get_db)
@@ -112,7 +112,7 @@ async def update_user(
     if user_data.full_name:
         user.full_name = user_data.full_name
 
-    if user_data.password:
+    if user_data.password and not user_data.password.startswith('$2'):
         user.password = bcrypt_context.hash(user_data.password)
 
     # 3. Guardar cambios
@@ -146,10 +146,16 @@ async def delete_user(
             detail="No se puede eliminar el usuario administrador principal"
         )
     
-    # 3. Guardar el nombre del client para verificar después
+    # 3. Eliminar registros relacionados antes de eliminar el usuario
+    if user.metrics_config:
+        db.delete(user.metrics_config)
+    if user.chatbot:
+        db.delete(user.chatbot)
+
+    # 4. Guardar el nombre del client para verificar después
     client_to_check = user.client
     
-    # 4. Eliminar el usuario
+    # 5. Eliminar el usuario
     db.delete(user)
     db.commit()
     
