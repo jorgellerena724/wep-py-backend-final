@@ -3,7 +3,8 @@ import logging
 from typing import Dict, List, Optional, Tuple, Any
 from sqlmodel import Session, func, select
 from sqlalchemy.orm import selectinload
-from groq import Groq, BadRequestError, APIError
+from groq import Groq, BadRequestError, APIError, APIStatusError
+from groq import AuthenticationError, PermissionDeniedError, NotFoundError, RateLimitError, APIConnectionError
 
 from app.models.wep_chatbot_model import ChatbotConfig, ChatbotModel, ChatbotUsage
 from app.config.config import settings
@@ -199,12 +200,6 @@ class ChatbotService:
             
             return ai_response, usage_info, session_key
             
-        except BadRequestError as e:
-            logger.error(f"❌ Error de API Groq (BadRequest): {str(e)}")
-            raise ChatbotServiceError(f"Error en la solicitud a Groq: {str(e)}")
-        except APIError as e:
-            logger.error(f"❌ Error de API Groq: {str(e)}")
-            raise ChatbotServiceError(f"Error de comunicación con Groq API: {str(e)}")
         except ChatbotServiceError:
             raise
         except Exception as e:
@@ -261,7 +256,15 @@ class ChatbotService:
             # Preparar parámetros
             max_tokens = getattr(config, 'max_tokens', 1000)
             
-            logger.info(f"🚀 Llamando a Groq API - Modelo: {model_name}, Temp: {config.temperature}")
+            api_key_preview = f"{api_key[:8]}..." if api_key else "VACÍA"
+            logger.info("=" * 60)
+            logger.info(f"🚀 GROQ REQUEST - User: {user_id}")
+            logger.info(f"   Modelo: {model_name}")
+            logger.info(f"   API Key: {api_key_preview}")
+            logger.info(f"   Temp: {config.temperature}, Max Tokens: {max_tokens}")
+            logger.info(f"   Mensajes: {len(messages)}")
+            logger.info(f"   Prompt sistema: {config.prompt[:100] if config.prompt else 'N/A'}...")
+            logger.info("=" * 60)
             
             response = groq_client.chat.completions.create(
                 messages=messages,
@@ -281,15 +284,79 @@ class ChatbotService:
                 "temperature": config.temperature
             }
             
-            logger.info(f"✅ Respuesta de Groq recibida - Tokens: {usage_info['total_tokens']}")
+            logger.info(f"✅ GROQ RESPONSE OK - Tokens: {usage_info['total_tokens']} "
+                        f"(prompt: {usage_info['prompt_tokens']}, completion: {usage_info['completion_tokens']})")
+            logger.info(f"   Respuesta (primeros 200): {ai_response[:200] if ai_response else 'VACÍA'}...")
             
             return ai_response, usage_info
             
+        except AuthenticationError as e:
+            status = getattr(e, 'status_code', '?')
+            body = getattr(e, 'body', '?')
+            logger.error(f"❌ GROQ AuthenticationError (HTTP {status})")
+            logger.error(f"   Body: {body}")
+            logger.error(f"   Message: {e}")
+            if user_id in self.groq_clients:
+                del self.groq_clients[user_id]
+                logger.info(f"🗑️ Cache limpiado para usuario {user_id}")
+            raise ChatbotServiceError(
+                "API key de Groq inválida (HTTP 401). "
+                "La key no existe o fue revocada. "
+                "Verifica en: https://console.groq.com/keys"
+            )
+            
+        except PermissionDeniedError as e:
+            status = getattr(e, 'status_code', '?')
+            body = getattr(e, 'body', '?')
+            logger.error(f"❌ GROQ PermissionDeniedError (HTTP {status})")
+            logger.error(f"   Body: {body}")
+            logger.error(f"   Message: {e}")
+            if user_id in self.groq_clients:
+                del self.groq_clients[user_id]
+                logger.info(f"🗑️ Cache limpiado para usuario {user_id}")
+            raise ChatbotServiceError(
+                f"API key de Groq sin permisos para el modelo '{model_name}' (HTTP 403). "
+                "Verifica que tu plan de Groq incluya este modelo."
+            )
+            
+        except NotFoundError as e:
+            status = getattr(e, 'status_code', '?')
+            body = getattr(e, 'body', '?')
+            logger.error(f"❌ GROQ NotFoundError (HTTP {status})")
+            logger.error(f"   Body: {body}")
+            logger.error(f"   Message: {e}")
+            raise ChatbotServiceError(
+                f"El modelo '{model_name}' no existe en Groq. "
+                f"Verifica el nombre del modelo en la configuración."
+            )
+            
+        except RateLimitError as e:
+            status = getattr(e, 'status_code', '?')
+            body = getattr(e, 'body', '?')
+            logger.error(f"❌ GROQ RateLimitError (HTTP {status})")
+            logger.error(f"   Body: {body}")
+            logger.error(f"   Message: {e}")
+            raise ChatbotServiceError(
+                "Límite de solicitudes de Groq excedido. "
+                "Espera unos momentos e intenta de nuevo."
+            )
+            
+        except APIConnectionError as e:
+            logger.error(f"❌ GROQ APIConnectionError - No se pudo conectar a Groq")
+            logger.error(f"   Message: {e}")
+            raise ChatbotServiceError(
+                "No se pudo conectar con Groq. "
+                "Verifica la conexión a internet."
+            )
+            
         except BadRequestError as e:
             error_msg = str(e)
-            logger.error(f"❌ BadRequestError de Groq: {error_msg}")
+            status = getattr(e, 'status_code', '?')
+            body = getattr(e, 'body', '?')
+            logger.error(f"❌ GROQ BadRequestError (HTTP {status})")
+            logger.error(f"   Body: {body}")
+            logger.error(f"   Message: {error_msg}")
             
-            # Proporcionar mensajes más específicos
             if "model" in error_msg.lower():
                 raise ChatbotServiceError(
                     f"El modelo '{model_name}' no es válido. "
@@ -299,33 +366,24 @@ class ChatbotService:
             else:
                 raise ChatbotServiceError(f"Error en la solicitud a Groq: {error_msg}")
                 
+        except APIStatusError as e:
+            status = getattr(e, 'status_code', '?')
+            body = getattr(e, 'body', '?')
+            logger.error(f"❌ GROQ APIStatusError (HTTP {status})")
+            logger.error(f"   Body: {body}")
+            logger.error(f"   Message: {e}")
+            raise ChatbotServiceError(
+                f"Error HTTP {status} de Groq. "
+                "Revisa los logs para más detalles."
+            )
+                
         except APIError as e:
             error_msg = str(e)
-            logger.error(f"❌ APIError de Groq: {error_msg}")
-            
-            # Error 403 = API key inválida o sin permisos
-            if "403" in error_msg or "Forbidden" in error_msg:
-                # Limpiar cache del cliente Groq para este usuario
-                if user_id in self.groq_clients:
-                    del self.groq_clients[user_id]
-                    logger.info(f"🗑️ Cache de cliente Groq limpiado para usuario {user_id}")
-                
-                raise ChatbotServiceError(
-                    "API key de Groq inválida o sin permisos. "
-                    "Por favor, verifica tu API key en la configuración del chatbot. "
-                    "Obtén una nueva en: https://console.groq.com/keys"
-                )
-            # Error 429 = Rate limit
-            elif "429" in error_msg or "rate" in error_msg.lower():
-                raise ChatbotServiceError(
-                    "Has excedido el límite de solicitudes de Groq. "
-                    "Por favor, intenta de nuevo en unos momentos."
-                )
-            else:
-                raise ChatbotServiceError(f"Error de comunicación con Groq API: {error_msg}")
+            logger.error(f"❌ GROQ APIError (genérico): {error_msg}")
+            raise ChatbotServiceError(f"Error de comunicación con Groq API: {error_msg}")
                 
         except Exception as e:
-            logger.error(f"❌ Error inesperado llamando a Groq API: {str(e)}")
+            logger.error(f"❌ GROQ Error inesperado: {str(e)}", exc_info=True)
             raise ChatbotServiceError(f"Error inesperado al comunicarse con Groq: {str(e)}")
 
 

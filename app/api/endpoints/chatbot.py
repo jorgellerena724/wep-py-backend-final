@@ -223,18 +223,24 @@ async def send_message(
         if "API key de Groq inválida" in error_msg or "sin permisos" in error_msg:
             status_code = status.HTTP_403_FORBIDDEN
             detail = "La configuración del chatbot es inválida. Por favor, actualiza tu API key de Groq en el dashboard."
+        elif "no existe en Groq" in error_msg:
+            status_code = status.HTTP_400_BAD_REQUEST
+            detail = error_msg
         elif "desactivado" in error_msg.lower() or "no configurado" in error_msg.lower() or "No se encontró configuración" in error_msg:
             status_code = status.HTTP_403_FORBIDDEN
             detail = "El chatbot no está disponible. Por favor, configúralo desde el dashboard." if source == "dashboard" else "El chatbot no está disponible en este momento."
         elif "mensaje vacío" in error_msg.lower():
             status_code = status.HTTP_400_BAD_REQUEST
             detail = "El mensaje no puede estar vacío"
-        elif "modelo" in error_msg.lower() and "no es válido" in error_msg.lower():
+        elif "modelo" in error_msg.lower() and ("no es válido" in error_msg.lower() or "no existe" in error_msg.lower()):
             status_code = status.HTTP_400_BAD_REQUEST
             detail = error_msg
-        elif "Rate limit" in error_msg or "excedido el límite" in error_msg:
+        elif "excedido" in error_msg.lower() or "límite" in error_msg.lower():
             status_code = status.HTTP_429_TOO_MANY_REQUESTS
             detail = "Has excedido el límite de solicitudes. Por favor, intenta de nuevo en unos momentos."
+        elif "conexión" in error_msg.lower() or "conectar" in error_msg.lower():
+            status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+            detail = "El servicio de IA no está disponible en este momento. Intenta de nuevo más tarde."
         else:
             status_code = status.HTTP_500_INTERNAL_SERVER_ERROR
             detail = error_msg if getattr(settings, 'SHOW_DETAILED_ERRORS', False) else "Error procesando el mensaje"
